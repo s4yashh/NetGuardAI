@@ -1,0 +1,20 @@
+Loading dataset...
+  reading Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv
+  reading Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv
+  reading Friday-WorkingHours-Morning.pcap_ISCX.csv
+  reading Monday-WorkingHours.pcap_ISCX.csv
+  reading Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv
+  reading Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv
+  reading Tuesday-WorkingHours.pcap_ISCX.csv
+  reading Wednesday-workingHours.pcap_ISCX.csv
+  500,000 flows used ({'Benign': 414812, 'Malicious': 85188})
+  69 features kept, 8 constant features dropped
+Training Random Forest...
+  validation F1=0.9955  test accuracy=0.9983 F1=0.9951  (74.2s)
+Training Decision Tree...
+  validation F1=0.9957  test accuracy=0.9981 F1=0.9946  (31.0s)
+Training Logistic Regression...
+  validation F1=0.8688  test accuracy=0.9561 F1=0.8701  (31.4s)
+Selected model: Random Forest
+Saved model to /home/titan/vit/suyash/cnproj/models and reports to /home/titan/vit/suyash/cnproj/reports
+peak memory: 2816712 KB, wall time: 10:55.34

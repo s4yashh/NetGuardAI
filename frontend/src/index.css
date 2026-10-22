@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* NetGuard AI design tokens (dark navy theme). Usable as bg-card, text-ink, etc. */
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-page: #0b1220;
+  --color-card: #111a2e;
+  --color-raised: #17223a;
+  --color-line: #24314f;
+  --color-grid: #1f2a44;
+
+  --color-ink: #e6ebf5;
+  --color-ink-2: #a9b4c9;
+  --color-muted: #8591a8;
+
+  --color-accent: #3987e5;
+  --color-accent-strong: #5598e7;
+
+  /* Prediction classes - blue/red pair validated for colour-blind separation */
+  --color-benign: #3987e5;
+  --color-malicious: #e66767;
+
+  /* Model series (fixed order: RF, DT, LR) */
+  --color-series-1: #3987e5;
+  --color-series-2: #d95926;
+  --color-series-3: #199e70;
+
+  --color-ok: #2fb344;
+  --color-warn: #fab219;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

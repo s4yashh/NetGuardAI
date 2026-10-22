@@ -1,0 +1,12 @@
+# Machine learning
+pandas==3.0.6
+numpy==2.5.4
+scikit-learn==1.9.1
+joblib==1.6.0
+# Backend
+fastapi==0.157.0
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+# Tests
+pytest==9.1.1
+httpx2==2.13.1
