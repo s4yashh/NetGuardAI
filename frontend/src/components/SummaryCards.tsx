@@ -1,19 +1,26 @@
-import { Activity, ShieldAlert, ShieldCheck, Target, type LucideIcon } from "lucide-react";
+import { Activity, ClipboardCheck, ShieldAlert, ShieldCheck, Target, type LucideIcon } from "lucide-react";
 import type { PredictionResponse } from "../api";
 import { formatInt, formatPct } from "../format";
 
 export default function SummaryCards({ result }: { result: PredictionResponse }) {
   const { summary, evaluation } = result;
+  const hasReview = summary.review > 0;
+
+  const columns = ["Flows analyzed", "Benign", "Malicious"]
+    .concat(hasReview ? ["Review"] : [])
+    .concat(evaluation ? ["Agreement"] : []);
+  const lg = columns.length >= 5 ? "lg:grid-cols-5" : columns.length === 4 ? "lg:grid-cols-4" : "lg:grid-cols-3";
+
   return (
     <div className="space-y-4">
-      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${evaluation ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}>
+      <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${lg}`}>
         <Stat icon={Activity} label="Flows analyzed" value={formatInt(summary.total)} note={result.filename} />
         <Stat
           icon={ShieldCheck}
           iconClass="text-benign"
           label="Benign"
           value={formatInt(summary.benign)}
-          note={formatPct(1 - summary.malicious_ratio) + " of flows"}
+          note={formatPct(summary.benign_ratio) + " of flows"}
         />
         <Stat
           icon={ShieldAlert}
@@ -22,6 +29,15 @@ export default function SummaryCards({ result }: { result: PredictionResponse })
           value={formatInt(summary.malicious)}
           note={formatPct(summary.malicious_ratio) + " of flows"}
         />
+        {hasReview && (
+          <Stat
+            icon={ClipboardCheck}
+            iconClass="text-warn"
+            label="Needs review"
+            value={formatInt(summary.review)}
+            note={formatPct(summary.review_ratio) + " of flows · not a verdict"}
+          />
+        )}
         {evaluation && (
           <Stat
             icon={Target}
@@ -31,7 +47,7 @@ export default function SummaryCards({ result }: { result: PredictionResponse })
           />
         )}
       </div>
-      <ProportionBar benign={summary.benign} malicious={summary.malicious} />
+      <ProportionBar benign={summary.benign} review={summary.review} malicious={summary.malicious} />
     </div>
   );
 }
@@ -59,20 +75,22 @@ function Stat({ icon: Icon, iconClass = "text-ink-2", label, value, note }: Stat
   );
 }
 
-/** One horizontal bar split into benign / malicious share, with a 2px gap between parts. */
-function ProportionBar({ benign, malicious }: { benign: number; malicious: number }) {
-  const total = benign + malicious;
+/** One horizontal bar split into benign / review / malicious share. */
+function ProportionBar({ benign, review, malicious }: { benign: number; review: number; malicious: number }) {
+  const total = benign + review + malicious || 1;
   return (
     <div className="rounded-xl border border-line bg-card px-5 py-4">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="text-ink-2">Traffic composition</span>
-        <span className="flex gap-4 text-ink-2">
+        <span className="flex flex-wrap gap-4 text-ink-2">
           <Legend color="bg-benign" label="Benign" value={benign / total} />
+          {review > 0 && <Legend color="bg-warn" label="Review" value={review / total} />}
           <Legend color="bg-malicious" label="Malicious" value={malicious / total} />
         </span>
       </div>
       <div className="flex h-3 gap-0.5 overflow-hidden rounded">
         {benign > 0 && <div className="bg-benign" style={{ flexGrow: benign }} title={`Benign: ${formatInt(benign)}`} />}
+        {review > 0 && <div className="bg-warn" style={{ flexGrow: review }} title={`Review: ${formatInt(review)}`} />}
         {malicious > 0 && (
           <div className="bg-malicious" style={{ flexGrow: malicious }} title={`Malicious: ${formatInt(malicious)}`} />
         )}

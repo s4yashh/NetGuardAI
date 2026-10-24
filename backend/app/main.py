@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.model_store import ModelNotAvailableError, ModelStore
-from ml import config
+from ml import config, reliability
 from ml.preprocess import FeatureValidationError, clean_column_names, has_labels, to_binary_labels
 
 MAX_UPLOAD_MB = 100
@@ -33,6 +33,10 @@ DISPLAY_COLUMNS = [
 ]
 
 FRONTEND_DIST = config.PROJECT_ROOT / "frontend" / "dist"
+
+# Cells beginning with these characters can be interpreted as formulas by
+# spreadsheet software. They are neutralised in the downloadable CSV.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
 def read_csv_upload(upload: UploadFile) -> pd.DataFrame:
@@ -65,10 +69,27 @@ def json_value(value):
     return value
 
 
+def sanitize_for_spreadsheet(df: pd.DataFrame) -> pd.DataFrame:
+    """Neutralise CSV formula injection in text columns of a downloaded file.
+
+    Numeric columns are untouched, so negative numbers keep their meaning; only
+    textual cells that a spreadsheet would treat as a formula are prefixed.
+    """
+    out = df.copy()
+    for column in out.columns:
+        # pandas 3 stores text as `str` rather than `object`, so test for
+        # "not numeric" instead of comparing dtype directly.
+        if not pd.api.types.is_numeric_dtype(out[column]):
+            out[column] = out[column].map(
+                lambda v: "'" + v if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES) else v
+            )
+    return out
+
+
 def create_app(model_path: Path = config.MODEL_PATH,
                metrics_path: Path = config.METRICS_PATH,
                serve_frontend: bool = True) -> FastAPI:
-    app = FastAPI(title="NetGuard AI", version="1.0.0",
+    app = FastAPI(title="NetGuard AI", version="1.1.0",
                   description="Malware detection using AI-based network traffic analysis")
     app.add_middleware(
         CORSMiddleware,
@@ -78,7 +99,7 @@ def create_app(model_path: Path = config.MODEL_PATH,
     )
     store = ModelStore(model_path)
 
-    def predict_or_raise(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    def predict_or_raise(df: pd.DataFrame) -> dict:
         try:
             return store.predict(df)
         except ModelNotAvailableError as exc:
@@ -100,6 +121,9 @@ def create_app(model_path: Path = config.MODEL_PATH,
             "model_name": bundle["model_name"],
             "trained_at": bundle.get("trained_at"),
             "feature_count": len(bundle["feature_names"]),
+            "protocol": bundle.get("protocol", "original"),
+            "reliability_active": bool(bundle.get("reliability")),
+            "shift_gate_active": bool(bundle.get("shift_profile")),
         }
 
     @app.get("/api/model/features")
@@ -123,10 +147,18 @@ def create_app(model_path: Path = config.MODEL_PATH,
     @app.post("/api/predict")
     def predict(file: UploadFile = File(...)):
         df = read_csv_upload(file)
-        predictions, probabilities = predict_or_raise(df)
+        result = predict_or_raise(df)
 
-        total = len(predictions)
-        malicious = int(predictions.sum())
+        predictions = result["predictions"]
+        probabilities = result["probabilities"]
+        raw_probabilities = result["raw_probabilities"]
+        decisions = result["decisions"]
+
+        total = int(len(decisions))
+        benign = int(np.count_nonzero(decisions == reliability.BENIGN))
+        malicious = int(np.count_nonzero(decisions == reliability.MALICIOUS))
+        review = int(np.count_nonzero(decisions == reliability.REVIEW))
+
         labelled = has_labels(df)
         actual = to_binary_labels(df[config.LABEL_COLUMN]) if labelled else None
 
@@ -134,34 +166,69 @@ def create_app(model_path: Path = config.MODEL_PATH,
         rows = []
         for i in range(min(total, MAX_TABLE_ROWS)):
             pred = int(predictions[i])
+            decision = int(decisions[i])
             rows.append({
                 "row": i + 1,
                 "values": {c: json_value(df[c].iat[i]) for c in display_columns},
                 "prediction": config.CLASS_NAMES[pred],
+                "decision": reliability.DECISION_NAMES[decision],
                 "malicious_probability": round(float(probabilities[i]), 4),
+                "raw_vote_fraction": round(float(raw_probabilities[i]), 4),
                 "actual": config.CLASS_NAMES[int(actual[i])] if labelled else None,
             })
 
         evaluation = None
         if labelled:
             correct = int((actual == predictions).sum())
+            flagged = decisions == reliability.MALICIOUS
+            tp = int(np.count_nonzero(flagged & (actual == 1)))
+            fp = int(np.count_nonzero(flagged & (actual == 0)))
+            fn = int(np.count_nonzero(~flagged & (actual == 1)))
             evaluation = {
                 "accuracy": correct / total,
                 "correct": correct,
                 "actual_malicious": int(actual.sum()),
                 "actual_benign": int(total - actual.sum()),
+                # Metrics for the three-way operating point (review counts as no alert).
+                "alert_precision": tp / (tp + fp) if (tp + fp) else 0.0,
+                "alert_recall": tp / (tp + fn) if (tp + fn) else 0.0,
+                "review": review,
+                "review_rate": review / total if total else 0.0,
             }
+
+        warning = None
+        shift = result["shift"]
+        if shift and shift["verdict"] == "severely_shifted":
+            warning = (
+                "This batch is far outside the traffic distribution the model was "
+                "trained on. Per-flow predictions are not reliable; treat them as "
+                "unverified rather than as findings."
+            )
+        elif shift and shift["verdict"] == "moderately_shifted":
+            warning = (
+                "This batch differs noticeably from the training traffic. "
+                "Check the shift report before acting on individual predictions."
+            )
 
         return {
             "filename": file.filename,
             "model_name": store.get()["model_name"],
             "summary": {
                 "total": total,
-                "benign": total - malicious,
+                "benign": benign,
                 "malicious": malicious,
-                "malicious_ratio": malicious / total,
+                "review": review,
+                "malicious_ratio": malicious / total if total else 0.0,
+                "review_ratio": review / total if total else 0.0,
+                "benign_ratio": benign / total if total else 0.0,
             },
             "evaluation": evaluation,
+            "reliability": {
+                **result["reliability"],
+                "counts": {"benign": benign, "malicious": malicious, "review": review},
+            },
+            "shift": shift,
+            "warning": warning,
             "display_columns": display_columns,
             "rows": rows,
             "rows_truncated": total > MAX_TABLE_ROWS,
@@ -169,14 +236,17 @@ def create_app(model_path: Path = config.MODEL_PATH,
 
     @app.post("/api/predict/download")
     def predict_download(file: UploadFile = File(...)):
-        """Return the uploaded CSV with Prediction and Malicious_Probability columns added."""
+        """Return the uploaded CSV with prediction, decision and confidence columns."""
         df = read_csv_upload(file)
-        predictions, probabilities = predict_or_raise(df)
-        df["Prediction"] = [config.CLASS_NAMES[p] for p in predictions]
-        df["Malicious_Probability"] = np.round(probabilities, 4)
+        result = predict_or_raise(df)
+
+        df["Prediction"] = [config.CLASS_NAMES[p] for p in result["predictions"]]
+        df["Decision"] = [reliability.DECISION_NAMES[d] for d in result["decisions"]]
+        df["Malicious_Probability"] = np.round(result["probabilities"], 4)
+        df["Raw_Vote_Fraction"] = np.round(result["raw_probabilities"], 4)
 
         buffer = io.StringIO()
-        df.to_csv(buffer, index=False)
+        sanitize_for_spreadsheet(df).to_csv(buffer, index=False)
         stem = Path(file.filename or "traffic").stem
         return StreamingResponse(
             iter([buffer.getvalue()]),

@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
+import { ChevronLeft, ChevronRight, ClipboardCheck, Download, LoaderCircle, ShieldAlert, ShieldCheck } from "lucide-react";
 import Card from "./Card";
 import type { ClassName, PredictionResponse, PredictionRow } from "../api";
 import { formatCompact, formatInt } from "../format";
 
-type Filter = "all" | "Benign" | "Malicious" | "wrong";
+type Filter = "all" | "Benign" | "Malicious" | "Review" | "wrong";
 const PAGE_SIZE = 20;
 
 interface ResultsTableProps {
@@ -26,6 +26,7 @@ export default function ResultsTable({ result, downloading, onDownload }: Result
     { id: "all", label: "All" },
     { id: "Benign", label: "Benign" },
     { id: "Malicious", label: "Malicious" },
+    ...(result.summary.review > 0 ? [{ id: "Review" as Filter, label: "Review" }] : []),
     ...(labelled ? [{ id: "wrong" as Filter, label: "Misclassified" }] : []),
   ];
 
@@ -76,7 +77,7 @@ export default function ResultsTable({ result, downloading, onDownload }: Result
                 </th>
               ))}
               <th className="px-3 py-2.5 font-medium">Malicious probability</th>
-              <th className="px-3 py-2.5 font-medium">Prediction</th>
+              <th className="px-3 py-2.5 font-medium">Decision</th>
               {labelled && <th className="px-3 py-2.5 font-medium">Actual</th>}
             </tr>
           </thead>
@@ -93,7 +94,7 @@ export default function ResultsTable({ result, downloading, onDownload }: Result
                   <ProbabilityBar value={r.malicious_probability} />
                 </td>
                 <td className="px-3 py-2">
-                  <ClassBadge value={r.prediction} />
+                  <ClassBadge value={r.decision} />
                 </td>
                 {labelled && (
                   <td className={`px-3 py-2 ${r.actual !== r.prediction ? "text-warn" : "text-ink-2"}`}>
@@ -137,10 +138,18 @@ export default function ResultsTable({ result, downloading, onDownload }: Result
 function matches(row: PredictionRow, filter: Filter): boolean {
   if (filter === "all") return true;
   if (filter === "wrong") return row.actual !== null && row.actual !== row.prediction;
-  return row.prediction === filter;
+  return row.decision === filter;
 }
 
-export function ClassBadge({ value }: { value: ClassName }) {
+export function ClassBadge({ value }: { value: ClassName | "Review" }) {
+  if (value === "Review") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-warn/15 px-2 py-0.5 text-xs font-medium text-ink">
+        <ClipboardCheck size={14} className="text-warn" />
+        Review
+      </span>
+    );
+  }
   const malicious = value === "Malicious";
   const Icon = malicious ? ShieldAlert : ShieldCheck;
   return (

@@ -17,20 +17,34 @@ cnproj/
 ├── ml/                     Machine-learning pipeline
 │   ├── config.py           Paths and constants (split sizes, random seed, label names)
 │   ├── preprocess.py       Cleaning used by BOTH training and the API
-│   └── train.py            Load → clean → split → train 3 models → evaluate → save best
+│   ├── reliability.py      Calibration, risk-controlled thresholds, review band,
+│   │                       and the batch distribution-shift gate
+│   ├── train.py            Load → clean → split → train 3 models → evaluate → save best
+│   └── experiments.py      Protocol comparison (random vs temporal) and ablations
 ├── backend/
 │   ├── app/main.py         FastAPI app and endpoints
 │   ├── app/model_store.py  Loads the saved model and runs predictions
 │   └── tests/              pytest tests (use a tiny synthetic model, not the real one)
 ├── frontend/               React dashboard (NetGuard AI)
-│   └── src/components/     Upload panel, summary cards, results table, charts
+│   └── src/components/     Upload panel, shift warning, summary cards, results table, charts
 ├── dataset/
 │   ├── raw/                CIC-IDS2017 CSV files go here (not committed, ~844 MB)
 │   └── samples/            Demo CSVs created by training from the held-out test set
 ├── models/                 netguard_model.joblib (created by training)
-├── reports/                metrics.json, model_report.md, training_log.txt
+├── reports/                metrics.json, experiments.json, model_report.md, training_log.txt
 └── docs/VIVA_GUIDE.md      Short explanation for the viva / presentation
 ```
+
+Research and audit documents live in the repository root:
+
+| Document | Contents |
+|---|---|
+| `PROJECT_AUDIT.md` | audit of the original implementation, with measured evidence |
+| `NOVELTY_RESEARCH.md` | related work, prior-art comparison, honest novelty assessment |
+| `INNOVATION_PROPOSAL.md` | the reliability layer: problem, mechanism, validation plan |
+| `EXPERIMENTS.md` | protocols, ablations, measured results, failures |
+| `TECHNICAL_DOCUMENTATION.md` | architecture, algorithms, data flow, API |
+| `PATENT_DISCLOSURE_DRAFT.md` | technical disclosure (states plainly that no novelty was established) |
 
 ---
 
@@ -83,6 +97,16 @@ source .venv/bin/activate
 python -m ml.train
 ```
 
+Useful options:
+
+| Option | Meaning |
+|---|---|
+| `--protocol original` | random split over all capture days (default, matches the deployed artefact) |
+| `--protocol temporal` | train Mon–Wed, calibrate Thursday morning, test Thursday afternoon + Friday |
+| `--alpha 0.01` | tolerable false-positive rate on benign flows (default 0.01) |
+| `--review-capacity 0.05` | share of traffic routed to human review (default 0.05) |
+| `--sample-size 0` | train on every flow (needs much more RAM and time) |
+
 What it does:
 
 1. Reads all 8 CSVs, strips spaces from column names, drops the duplicated `Fwd Header Length.1` column,
@@ -98,8 +122,14 @@ What it does:
 7. Chooses the model to deploy using the **validation** set: Random Forest (the primary model) is kept unless
    another model beats its validation F1 by more than 0.001. It then reports accuracy, precision, recall, F1 and the
    confusion matrix of every model on the **test** set.
-8. Saves:
-   - `models/netguard_model.joblib`: best pipeline + required feature list
+8. Fits the **reliability layer**: isotonic probability calibration on half of the
+   calibration split, then a false-alarm-budgeted alert threshold and a
+   review-capacity-bounded abstention band on the other half.
+9. Fits the **batch shift gate**: a reference sample of benign training flows plus a
+   bootstrap null distribution drawn within single capture days.
+10. Saves:
+   - `models/netguard_model.joblib`: best pipeline + required feature list +
+     reliability layer + shift profile
    - `reports/metrics.json` and `reports/model_report.md`: evaluation results
    - `dataset/samples/`: demo files built from real test-set flows
 
@@ -116,15 +146,29 @@ API documentation: <http://127.0.0.1:8000/docs>
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/api/health` | Is a model loaded? Which one? |
+| GET | `/api/health` | Is a model loaded? Which one? Are the reliability layer and shift gate active? |
 | GET | `/api/metrics` | Evaluation results saved by training |
 | GET | `/api/model/features` | Feature columns an uploaded CSV must contain |
-| POST | `/api/predict` | Upload a CSV → counts + per-row predictions (JSON) |
-| POST | `/api/predict/download` | Upload a CSV → same CSV with `Prediction` and `Malicious_Probability` columns |
+| POST | `/api/predict` | Upload a CSV → counts, per-row predictions, three-way decisions, batch shift verdict (JSON) |
+| POST | `/api/predict/download` | Upload a CSV → same CSV with `Prediction`, `Decision`, `Malicious_Probability`, `Raw_Vote_Fraction` columns |
 
 Input validation: only `.csv` files up to 100 MB; empty files, files with no rows, missing feature columns
 and non-numeric feature values are rejected with a clear message. Extra columns are ignored. If no model has
 been trained, prediction endpoints return HTTP 503.
+
+The reliability layer adds three things to the response:
+
+- `rows[].decision` is `Benign`, `Malicious` or `Review`. `Review` means the model
+  is not confident enough to call it either way; it is not a classification claim.
+- `reliability` reports the operating point (`alpha`, `t_alert`, `t_benign`) and the
+  three-way counts.
+- `shift` reports whether the batch as a whole resembles the training traffic, with
+  a `warning` string when it does not. The gate compares the flows the model did
+  **not** flag against a reference sample of benign training traffic.
+
+Downloaded CSVs have text cells beginning with `=`, `+`, `-` or `@` prefixed with an
+apostrophe, so opening the file in a spreadsheet cannot execute a formula from an
+untrusted upload.
 
 ## 6. Start the frontend
 
@@ -146,11 +190,18 @@ built dashboard at <http://127.0.0.1:8000>.
 2. Scroll to **Model evaluation** to see the comparison table, bar chart, confusion matrix, dataset split and
    feature importances (all loaded from `reports/metrics.json`).
 3. Upload `dataset/samples/demo_test_flows.csv` (2,000 real flows from the held-out test set, with labels).
-   Click **Analyze traffic**. You'll see benign/malicious counts, the agreement with the file's own labels, and
-   the results table (filter by Benign / Malicious / Misclassified).
-4. Click **Download CSV** to get the file with predictions added.
+   Click **Analyze traffic**. You'll see a green *distribution matches training traffic* line, benign /
+   malicious / **review** counts, the agreement with the file's own labels, and the results table
+   (filter by Benign / Malicious / Review / Misclassified). Each row shows a three-way **Decision**;
+   `Review` means the model declined to call it either way.
+4. Click **Download CSV** to get the file with `Prediction`, `Decision`, `Malicious_Probability` and
+   `Raw_Vote_Fraction` columns added.
 5. Upload `dataset/samples/demo_unlabeled_flows.csv` to see predictions for a file without labels.
-6. Upload `dataset/samples/invalid_missing_columns.csv` to show input validation (missing columns are listed).
+6. Upload `dataset/samples/demo_shifted_flows.csv`. This is the same 2,000 flows with every numeric
+   feature scaled far outside its training range. The dashboard shows a red **distribution warning**
+   above the results and names the most-affected features. Before the reliability layer existed, this
+   file produced 2,000 confident `Benign` labels and no warning at all.
+7. Upload `dataset/samples/invalid_missing_columns.csv` to show input validation (missing columns are listed).
 
 Command-line check without the UI:
 
@@ -181,6 +232,15 @@ of the 2,499,543 unique CIC-IDS2017 flows; the test set is 100,000 flows never u
 | Logistic Regression | 95.61% | 87.81% | 86.23% | 87.01% | 86.88% |
 
 Random Forest confusion matrix on the test set: 82,890 TN · 72 FP · 95 FN · 16,943 TP.
+
+> **Important caveat — read this before quoting the table above.**
+> These numbers come from a **random** train/test split, which deals flows from the
+> same capture sessions into both sides. Re-running the same model with a **temporal**
+> split (train Mon–Wed, test Thu afternoon + Fri) drops recall from **0.998 to
+> 0.303**. Per attack type on those unseen days: DDoS 0.980, PortScan 0.117, Bot
+> 0.023. The table below is reproducible and correct *for the split it was measured
+> on*; it is not an estimate of how the model would perform on a new network. See
+> `EXPERIMENTS.md` for the full comparison.
 
 Decision Tree scored 0.0002 higher validation F1 than Random Forest (about one or two flows out of 40,000). That gap
 is noise, so the selection rule keeps Random Forest, which also scores higher on the test set.

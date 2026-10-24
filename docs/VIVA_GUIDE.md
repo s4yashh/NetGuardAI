@@ -136,15 +136,91 @@ Data facts: 2,830,743 raw flows → 331,200 duplicates removed → 500,000-flow 
 
 On the demo file (`demo_test_flows.csv`, 2,000 test-set flows) the deployed model gets 1,998 right (99.9%).
 
-## 8. Live demo script (≈ 5 minutes)
+## 7b. The reliability layer
+
+Version 1.1 adds three things on top of the classifier. They exist because the
+numbers in §7 are measured on a **random** split, which is not how the model would
+be used.
+
+**1. Batch shift gate.** Before results are shown, the upload is compared against a
+reference sample of benign training traffic using a per-feature Kolmogorov–Smirnov
+statistic, aggregated and calibrated on single-day bootstrap batches. If the batch
+does not resemble training traffic, the dashboard says so *above* the results.
+
+**2. Three-way decision.** Each flow is `Benign`, `Malicious`, or **`Review`**. The
+review band is sized by how many flows an analyst can actually look at, and the
+alert threshold comes from a false-alarm budget (default 1%) rather than a fixed
+0.5.
+
+**3. Honest probabilities.** The Random Forest vote fraction is mapped through
+isotonic regression, so `Malicious_Probability` is an actual probability. The raw
+vote fraction is still exported as `Raw_Vote_Fraction`.
+
+## 7c. The temporal-split finding
+
+This is the most important result in the project and the strongest thing to say in
+a viva.
+
+Retraining the same model but splitting by capture day — train Monday–Wednesday,
+calibrate Thursday morning, test Thursday afternoon and Friday — changes the story
+completely:
+
+| Test set | Recall | False-positive rate |
+|---|---|---|
+| Random split, Monday–Wednesday | **0.998** | 0.0003 |
+| Unseen days (Thursday afternoon + Friday) | **0.303** | 0.0004 |
+
+Per attack type on the unseen days:
+
+| Attack | Rows | Recall |
+|---|---|---|
+| DDoS | 20,000 | 0.980 |
+| Infiltration | 36 | 0.583 |
+| PortScan | 20,000 | **0.117** |
+| Bot | 1,953 | **0.023** |
+
+Two conclusions, both honest:
+
+- The 99%+ figures in §7 largely measure the model's ability to recognise attack
+  types **it has already seen**. PortScan and Bot, which occur only on days the
+  model never trained on, are almost entirely missed.
+- DDoS generalises anyway (98%), so it is not simply "unseen attacks always fail" —
+  some attacks are distinctive enough to transfer. Saying this shows you read the
+  table rather than the headline.
+
+The false-alarm budget also breaks under day shift: a nominal 1% budget realised
+**4.64%** on the unseen days, versus 0.67% in-distribution. That is exactly what
+conformal theory predicts when the exchangeability assumption fails, and it is the
+justification for the shift gate.
+
+**Say this before they find it.** It converts the weakest part of the project into
+the strongest.
+
+## 8. Live demo script (≈ 7 minutes)
 
 1. Show the header badge: *Model ready · Random Forest*.
 2. Model evaluation section: comparison table and chart, confusion matrix (switch between models), split, top features.
-3. Upload `dataset/samples/demo_test_flows.csv` → **Analyze traffic**. Explain counts, the agreement with the file's
-   labels, the probability column, and the *Misclassified* filter.
-4. **Download CSV** → open it to show the new `Prediction` and `Malicious_Probability` columns.
-5. Upload `dataset/samples/invalid_missing_columns.csv` → show the validation error listing missing columns.
-6. Optional: open <http://127.0.0.1:8000/docs> to show the API.
+3. Upload `dataset/samples/demo_test_flows.csv` → **Analyze traffic**. Point out:
+   - the green *Batch distribution matches the training traffic* line,
+   - the counts and the agreement with the file's labels,
+   - the **Review** outcome in the Decision column and the *Review* filter,
+   - that `Malicious probability` is now a calibrated probability and
+     `Raw_Vote_Fraction` is the uncalibrated vote.
+4. **Download CSV** → open it to show `Prediction`, `Decision`,
+   `Malicious_Probability` and `Raw_Vote_Fraction`.
+5. **The shift demonstration.** Upload `dataset/samples/demo_shifted_flows.csv`.
+   This is the same 2,000 flows with every numeric feature scaled far outside its
+   training range. The dashboard shows a red warning *before* the results, names
+   the most-affected features, and the model — which would otherwise report "no
+   threats found" — is correctly labelled unreliable. **This is the strongest
+   moment in the demo: say that the same file used to return 2,000 confident
+   `Benign` labels.**
+6. Upload `dataset/samples/invalid_missing_columns.csv` → show the validation error listing missing columns.
+7. Optional: open <http://127.0.0.1:8000/docs> to show the API.
+
+If asked how the review band and thresholds were chosen, point at
+`reports/metrics.json` → `reliability` → `calibration`, which records the
+false-alarm budget, the realised rate, and whether the budget was feasible.
 
 ## 9. Likely viva questions
 
@@ -165,3 +241,35 @@ On the demo file (`demo_test_flows.csv`, 2,000 test-set flows) the deployed mode
 - **Can it capture live traffic?** No. It works on flow CSVs produced by CICFlowMeter. Live capture is future work.
 - **Future work:** multi-class attack types, live capture with CICFlowMeter, testing on newer datasets
   (e.g. CSE-CIC-IDS2018), handling class imbalance (class weights / SMOTE), hyper-parameter tuning.
+
+**Questions about the reliability layer:**
+
+- **What is the shift gate actually testing?** A per-feature two-sample KS statistic
+  between the uploaded batch and a reference sample of *benign* training flows,
+  normalised by `sqrt(n_eff)` so the same threshold works for any batch size, then
+  aggregated with the 90th percentile across the 69 features.
+- **Why compare only the non-flagged flows?** Because flagged flows are *supposed*
+  to look different. Including them would make every batch containing attacks look
+  shifted. The gate answers "is the normal traffic here like the normal traffic the
+  model learned?" — it is not a second attack detector.
+- **Why calibrate the null per capture day?** Because bootstrapping from a mixture
+  of days makes any ordinary one-day upload look anomalous — it isn't a blend of
+  five days. With pooled calibration the gate flagged 8 of 8 days; with per-day
+  calibration it flagged 1 of 8.
+- **What does the gate miss?** Shifts that preserve every marginal distribution,
+  such as independently permuting each column. Measured detection rate on that
+  family: 0%. The code reports this rather than hiding it.
+- **Why is the review band sometimes empty?** Because in-distribution the model is
+  very separable, so there is almost nothing in the ambiguous region. The band
+  appears when traffic gets harder — it was 16.2% on the unseen days.
+- **Does the false-alarm budget actually hold?** In-distribution, yes: 0.67%
+  realised against a 1% budget. Under day shift, no: 4.64% realised. That is
+  expected — the guarantee assumes exchangeability between calibration and
+  deployment, which unseen capture days violate. **This is exactly why the shift
+  gate exists**: it tells the operator when the guarantee is void.
+- **Did the review band improve anything?** Not in these experiments — B2 and B3
+  scored identically in all three protocols. The hypothesis was not supported and
+  that is reported as a negative result.
+- **Was any of this novel?** No. Every component is published — see
+  `NOVELTY_RESEARCH.md`. The contribution is the integration plus the measurement
+  in §7c. Do not claim otherwise.

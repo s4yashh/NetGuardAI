@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, Info } from "lucide-react";
 import Header from "./components/Header";
 import UploadPanel from "./components/UploadPanel";
+import ShiftWarning from "./components/ShiftWarning";
 import SummaryCards from "./components/SummaryCards";
 import ResultsTable from "./components/ResultsTable";
 import DatasetInfo from "./components/DatasetInfo";
@@ -96,6 +97,7 @@ export default function App() {
 
         {result && (
           <>
+            <ShiftWarning shift={result.shift} warning={result.warning} />
             <SummaryCards result={result} />
             <ResultsTable result={result} downloading={downloading} onDownload={handleDownload} />
           </>

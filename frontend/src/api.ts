@@ -3,6 +3,7 @@
 // and FastAPI serves the built frontend on the same origin in production.
 
 export type ClassName = "Benign" | "Malicious";
+export type DecisionName = "Benign" | "Malicious" | "Review";
 
 export interface Health {
   status: string;
@@ -10,6 +11,9 @@ export interface Health {
   model_name?: string;
   trained_at?: string;
   feature_count?: number;
+  protocol?: string;
+  reliability_active?: boolean;
+  shift_gate_active?: boolean;
   error?: string;
 }
 
@@ -17,20 +21,57 @@ export interface PredictionRow {
   row: number;
   values: Record<string, number | null>;
   prediction: ClassName;
+  decision: DecisionName;
   malicious_probability: number;
+  raw_vote_fraction: number;
   actual: ClassName | null;
+}
+
+export interface ShiftReport {
+  verdict: "in_distribution" | "moderately_shifted" | "severely_shifted";
+  score: number;
+  threshold_in: number;
+  threshold_severe: number;
+  top_shifted_features: { feature: string; score: number }[];
+  basis?: string;
+  rows_compared?: number;
+}
+
+export interface ReliabilityInfo {
+  active: boolean;
+  kind?: string;
+  alpha?: number;
+  t_alert?: number;
+  t_benign?: number;
+  review_capacity?: number;
+  counts?: { benign: number; malicious: number; review: number };
 }
 
 export interface PredictionResponse {
   filename: string;
   model_name: string;
-  summary: { total: number; benign: number; malicious: number; malicious_ratio: number };
+  summary: {
+    total: number;
+    benign: number;
+    malicious: number;
+    review: number;
+    malicious_ratio: number;
+    review_ratio: number;
+    benign_ratio: number;
+  };
   evaluation: {
     accuracy: number;
     correct: number;
     actual_malicious: number;
     actual_benign: number;
+    alert_precision: number;
+    alert_recall: number;
+    review: number;
+    review_rate: number;
   } | null;
+  reliability: ReliabilityInfo;
+  shift: ShiftReport | null;
+  warning: string | null;
   display_columns: string[];
   rows: PredictionRow[];
   rows_truncated: boolean;
@@ -59,10 +100,10 @@ export interface Metrics {
     rows_after_cleaning: number;
     rows_used: number;
     sampled: boolean;
-    class_counts: Record<ClassName, number>;
+    class_counts?: Record<ClassName, number>;
     attack_counts: Record<string, number>;
   };
-  split: { train: number; validation: number; test: number };
+  split: { train: number; validation: number; calibration?: number; test: number };
   features: { count: number; names: string[]; dropped_constant: string[] };
   models: ModelResult[];
   feature_importances: { feature: string; importance: number }[];

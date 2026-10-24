@@ -23,8 +23,15 @@ CLASS_NAMES = ["Benign", "Malicious"]  # index 0 = Benign, index 1 = Malicious
 RANDOM_STATE = 42
 TEST_SIZE = 0.20        # 20% of the data is kept aside for final testing
 VALIDATION_SIZE = 0.10  # 10% of the training part is used to choose the best model
+CALIBRATION_SIZE = 0.10 # 10% is used to fit probability calibration + thresholds
 
 # Random Forest is the project's primary model. Another model replaces it only if
 # it is clearly better: validation F1 higher by more than this margin.
 PRIMARY_MODEL = "Random Forest"
 SELECTION_MARGIN = 0.001
+
+# Reliability layer defaults.
+ALPHA = 0.01             # tolerable false-positive rate on benign flows
+REVIEW_CAPACITY = 0.05   # share of traffic an analyst can review
+REVIEW_LABEL = "Review"
+

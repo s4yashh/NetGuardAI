@@ -6,16 +6,22 @@ import { formatDate, formatInt } from "../format";
 /** Facts about the data the model was trained and tested on. */
 export default function DatasetInfo({ metrics }: { metrics: Metrics }) {
   const { dataset, split, features } = metrics;
-  const total = split.train + split.validation + split.test;
+  const calibration = split.calibration ?? 0;
+  const total = split.train + split.validation + calibration + split.test;
   const items = [
     { label: "Raw flows", value: formatInt(dataset.raw_rows) },
     { label: "Duplicates removed", value: formatInt(dataset.duplicates_removed) },
     { label: "Flows used", value: formatInt(dataset.rows_used) },
     { label: "Features", value: String(features.count) },
   ];
+  // Older reports carried class_counts; newer ones only store the raw attack
+  // counts, so derive the binary balance from those when needed.
+  const benign = dataset.class_counts?.Benign ?? dataset.attack_counts.BENIGN ?? 0;
+  const malicious = dataset.class_counts?.Malicious ?? Math.max(dataset.rows_used - benign, 0);
   const parts = [
     { label: "Train", value: split.train, color: "bg-accent" },
     { label: "Validation", value: split.validation, color: "bg-ink-2" },
+    ...(calibration > 0 ? [{ label: "Calibration", value: calibration, color: "bg-warn" }] : []),
     { label: "Test", value: split.test, color: "bg-muted" },
   ];
 
@@ -51,7 +57,7 @@ export default function DatasetInfo({ metrics }: { metrics: Metrics }) {
       <div className="mt-5 flex items-start gap-2 rounded-lg bg-raised px-3 py-2.5 text-xs text-ink-2">
         <Database size={14} className="mt-0.5 shrink-0 text-muted" />
         <span>
-          Class balance: {formatInt(dataset.class_counts.Benign)} benign / {formatInt(dataset.class_counts.Malicious)}{" "}
+          Class balance: {formatInt(benign)} benign / {formatInt(malicious)}{" "}
           malicious flows{dataset.sampled ? " (stratified sample of the cleaned dataset)" : ""}. Trained{" "}
           {formatDate(metrics.generated_at)}.
         </span>

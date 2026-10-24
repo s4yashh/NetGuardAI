@@ -68,3 +68,42 @@ def client(model_files):
 def client_without_model(tmp_path):
     app = create_app(tmp_path / "missing.joblib", tmp_path / "missing.json", serve_frontend=False)
     return TestClient(app)
+
+
+@pytest.fixture
+def reliable_files(tmp_path):
+    """A bundle that includes the reliability layer and the batch shift profile."""
+    from ml import reliability
+
+    flows = synthetic_flows(n=800, seed=3)
+    X = flows[FEATURES]
+    y = (flows["Label"] != "BENIGN").astype(int).to_numpy()
+
+    pipeline = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("model", RandomForestClassifier(n_estimators=10, random_state=0)),
+    ])
+    pipeline.fit(X, y)
+
+    layer = reliability.fit_reliability(
+        pipeline.predict_proba(X)[:, 1], y, alpha=0.05, review_capacity=0.1, seed=0)
+    profile = reliability.fit_shift_profile(
+        X.to_numpy(), FEATURES, reference_size=200, null_pool_size=200,
+        null_batch_size=100, n_bootstrap=20, seed=0)
+
+    model_path = tmp_path / "reliable.joblib"
+    joblib.dump({
+        "pipeline": pipeline, "feature_names": FEATURES,
+        "model_name": "Random Forest", "trained_at": "test",
+        "protocol": "original", "reliability": layer, "shift_profile": profile,
+    }, model_path)
+
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(json.dumps({"best_model": "Random Forest", "models": []}))
+    return model_path, metrics_path
+
+
+@pytest.fixture
+def reliable_client(reliable_files):
+    model_path, metrics_path = reliable_files
+    return TestClient(create_app(model_path, metrics_path, serve_frontend=False))

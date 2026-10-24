@@ -2,6 +2,7 @@ import io
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from backend.tests.conftest import FEATURES, synthetic_flows, to_csv_bytes
 from ml.preprocess import FeatureValidationError, prepare_features, to_binary_labels
@@ -124,3 +125,67 @@ def test_prepare_features_reports_missing_columns():
         assert "Destination Port" in exc.columns
     else:
         raise AssertionError("expected FeatureValidationError")
+
+
+# ---------------------------------------------------------------- reliability layer
+def test_health_reports_layer_status(reliable_client):
+    body = reliable_client.get("/api/health").json()
+    assert body["reliability_active"] is True
+    assert body["shift_gate_active"] is True
+    assert body["protocol"] == "original"
+
+
+def test_predict_exposes_decisions_and_shift(reliable_client):
+    flows = synthetic_flows(n=200, seed=11)
+    body = upload(reliable_client, to_csv_bytes(flows)).json()
+
+    assert body["reliability"]["active"] is True
+    assert body["reliability"]["alpha"] == pytest.approx(0.05)
+
+    counts = body["reliability"]["counts"]
+    assert counts["benign"] + counts["malicious"] + counts["review"] == body["summary"]["total"]
+    assert body["summary"]["review"] == counts["review"]
+
+    decisions = {row["decision"] for row in body["rows"]}
+    assert decisions <= {"Benign", "Malicious", "Review"}
+    assert all("raw_vote_fraction" in row for row in body["rows"])
+    assert body["shift"] is not None
+    assert body["shift"]["verdict"] in {"in_distribution", "moderately_shifted", "severely_shifted"}
+
+
+def test_shifted_batch_raises_a_warning(reliable_client):
+    """A wildly scaled batch must be flagged rather than silently labelled benign."""
+    flows = synthetic_flows(n=400, seed=12)
+    for column in FEATURES:
+        flows[column] = flows[column].astype(float) * 1000.0 + 1e6
+
+    body = upload(reliable_client, to_csv_bytes(flows)).json()
+    assert body["shift"]["verdict"] == "severely_shifted"
+    assert body["warning"] is not None
+
+
+def test_download_includes_decision_columns(reliable_client):
+    flows = synthetic_flows(n=40, seed=13)
+    response = upload(reliable_client, to_csv_bytes(flows), path="/api/predict/download")
+    result = pd.read_csv(io.StringIO(response.text))
+    assert {"Prediction", "Decision", "Malicious_Probability", "Raw_Vote_Fraction"} <= set(result.columns)
+    assert set(result["Decision"]) <= {"Benign", "Malicious", "Review"}
+
+
+def test_download_neutralises_spreadsheet_formulas(client):
+    """A cell starting with '=' must not be written back as an executable formula."""
+    flows = synthetic_flows(n=5, seed=14)
+    flows["Note"] = "=cmd|' /C calc'!A0"
+    response = upload(client, to_csv_bytes(flows), path="/api/predict/download")
+    result = pd.read_csv(io.StringIO(response.text))
+    assert result["Note"].iloc[0].startswith("'=")
+
+
+def test_evaluation_includes_operating_point(reliable_client):
+    flows = synthetic_flows(n=300, seed=15)
+    body = upload(reliable_client, to_csv_bytes(flows)).json()
+    evaluation = body["evaluation"]
+    assert evaluation is not None
+    assert 0.0 <= evaluation["alert_precision"] <= 1.0
+    assert 0.0 <= evaluation["alert_recall"] <= 1.0
+    assert evaluation["review"] == body["summary"]["review"]
