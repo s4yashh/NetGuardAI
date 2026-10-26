@@ -42,8 +42,11 @@ def chapter1(R: Report, A: dict, M: dict, D) -> None:
         "prepared; three classifiers (Random Forest, Decision Tree and Logistic Regression) are trained "
         "and compared on held-out data; and the best model is served through a FastAPI backend and a "
         "React dashboard where a user can upload a CSV file of flows and receive a benign or malicious "
-        "verdict for every flow. Particular attention is given to the dataset itself, because the "
-        "quality, balance and structure of the data determine what any model can learn."
+        "verdict for every flow. A reliability layer calibrates the model's probabilities, sets the alert "
+        "threshold for a chosen false-positive budget, routes uncertain flows to human review and warns "
+        "when an uploaded batch does not resemble the training traffic. Particular attention is given to "
+        "the dataset itself, because the quality, balance and structure of the data determine what any "
+        "model can learn, and a temporal experiment tests how the model performs on days it has never seen."
     )
 
     R.heading("1.1", "Objective")
@@ -65,6 +68,11 @@ def chapter1(R: Report, A: dict, M: dict, D) -> None:
         "accuracy, precision, recall and F1-score using genuine evaluation results.",
         "To analyse detection performance separately for each attack type, linking strengths and "
         "weaknesses of the model back to properties of the dataset.",
+        "To test whether the model generalises to traffic recorded on days it was not trained on, by "
+        "comparing a random split with a temporal (day-based) split.",
+        "To add a reliability layer: calibrated probabilities, an alert threshold that keeps the false "
+        "positive rate within a chosen budget, a review band for uncertain flows and a batch-level "
+        "distribution-shift warning.",
         "To deploy the selected model behind a validated REST API and a responsive dashboard named "
         "NetGuard AI that shows predictions, evaluation metrics, a confusion matrix and a model "
         "comparison chart, and lets the user download the results.",
@@ -291,7 +299,9 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
     R.para(
         "The **FastAPI backend** loads the saved model and exposes endpoints that accept a CSV upload, validate "
         "it, apply the same preprocessing as training, and return a prediction and a malicious probability "
-        "for every flow, or the uploaded file with the predictions appended as new columns. The **React "
+        "for every flow, or the uploaded file with the predictions appended as new columns. Every flow "
+        "receives one of three decisions (Benign, Review or Malicious) and every batch receives a "
+        "distribution-shift verdict. The **React "
         "dashboard** lets the user upload a file, start the analysis, read the benign and malicious counts, "
         "inspect and filter a results table, download the results and view the evaluation of all three "
         "models, including a confusion matrix and a comparison chart."
@@ -300,8 +310,9 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
         "A typical session proceeds as follows. The user opens the dashboard, which reports that the Random "
         "Forest model is loaded. The user selects a CSV file of flows and presses *Analyze traffic*. Within "
         "a few seconds the dashboard shows how many flows were analysed and how many were classified as "
-        "malicious; if the file contains a Label column, the agreement between the predictions and the "
-        "labels is also shown. The user can filter the table to see only malicious flows or only "
+        "benign, malicious or sent for review, and a banner states whether the batch resembles the "
+        "training traffic; if the file contains a Label column, the agreement between the predictions and "
+        "the labels is also shown. The user can filter the table to see only malicious flows or only "
         "misclassified ones, and can download the full result as a CSV file."
     )
 
@@ -317,6 +328,10 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
         f"achieved {pct(rf['f1_score'])} (Chapter 7).",
         "**Honest comparison:** report accuracy, precision, recall and F1-score for Random Forest, Decision "
         "Tree and Logistic Regression from the same test set, plus per-attack detection rates.",
+        "**Generalisation:** measure performance on unseen capture days with a temporal protocol and report "
+        "the result even when it is poor (Section 7.6).",
+        "**Controlled alerting:** keep the false positive rate of the deployed alert threshold below "
+        "α = 1% on held-out data and flag batches that differ from the training distribution.",
         "**Working application:** serve real predictions from the saved model through a validated API and a "
         "responsive dashboard, with automated backend tests and a successful production build.",
         "**Reproducibility:** every number in the dashboard and in this report is generated by scripts in "
@@ -334,6 +349,8 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
         ["CSV upload, validation, prediction and CSV download", "User accounts, authentication and a database"],
         ["Random Forest, Decision Tree, Logistic Regression", "Deep learning models"],
         ["Evaluation dashboard with real metrics", "Automatic blocking of traffic (intrusion prevention)"],
+        ["Calibration, review band and batch shift warning", "Automatic retraining when shift is detected"],
+        ["Random and temporal (day-based) evaluation protocols", "Online learning from analyst feedback"],
         ["Detailed dataset analysis and reporting", "Testing on other datasets or production networks"],
     ], widths=[3.0, 3.0])
 
@@ -341,6 +358,8 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
     R.table("Project Deliverables and Their Location in the Repository", ["Deliverable", "Location"], [
         ["Shared preprocessing used by training and API", "ml/preprocess.py"],
         ["Training and model comparison pipeline", "ml/train.py"],
+        ["Reliability layer and shift gate", "ml/reliability.py"],
+        ["Protocol comparison experiments", "ml/experiments.py, reports/experiments.json"],
         ["Dataset analysis and report figures", "ml/analyze_dataset.py, reports/figures/"],
         ["Trained model bundle", "models/netguard_model.joblib"],
         ["Evaluation report", "reports/metrics.json, reports/model_report.md"],
@@ -348,7 +367,9 @@ def chapter2(R: Report, A: dict, M: dict, D) -> None:
         ["FastAPI backend and tests", "backend/app/, backend/tests/"],
         ["React dashboard", "frontend/src/"],
         ["Demo CSV files from the held-out test set", "dataset/samples/"],
-        ["README, viva guide and this report", "README.md, docs/"],
+        ["Test files for evaluators (valid, invalid and shifted inputs)", "dataset/faculty_tests/"],
+        ["One-command start and stop scripts", "start.sh, stop.sh"],
+        ["README and this report", "README.md, docs/report/"],
     ], widths=[3.4, 2.6])
 
     R.heading("2.6", "Users and use cases")
@@ -375,8 +396,8 @@ def chapter3(R: Report, A: dict, M: dict, D) -> None:
         ["Processor", "Intel Core i5-1135G7 (11th Gen) @ 2.40 GHz, 6 logical CPUs available to Linux"],
         ["Memory", "7 GB available to the Linux environment (WSL 2)"],
         ["Storage", "1 TB virtual disk; the dataset needs about 844 MB, the project about 100 MB plus dependencies"],
-        ["Peak memory during training", "2.8 GB (measured with /usr/bin/time)"],
-        ["Training time", "About 11 minutes for the full pipeline (about 4 minutes of it reading the CSV files)"],
+        ["Peak memory during training", "About 3 GB (2.8 GB measured with /usr/bin/time)"],
+        ["Training time", "About 4 minutes to read and clean the CSV files; under 30 s to fit the three models"],
     ], widths=[1.8, 4.2])
 
     R.heading("3.2", "Software specification")
@@ -384,7 +405,8 @@ def chapter3(R: Report, A: dict, M: dict, D) -> None:
         ["Operating system", "Linux on WSL 2", "kernel 6.18", "Development and execution environment"],
         ["Language", "Python", "3.14.7", "ML pipeline, analysis and backend"],
         ["Data processing", "pandas / NumPy", "3.0.6 / 2.5.4", "Loading and cleaning CSV data"],
-        ["Machine learning", "scikit-learn", "1.9.1", "Models, pipelines, metrics, splitting"],
+        ["Machine learning", "scikit-learn", "1.9.1", "Models, pipelines, calibration, metrics"],
+        ["Statistics", "SciPy", "1.18.1", "Kolmogorov–Smirnov test in the shift gate"],
         ["Model storage", "joblib", "1.6.0", "Saving and loading the trained pipeline"],
         ["Web API", "FastAPI / Uvicorn", "0.157.0 / 0.54.0", "REST endpoints and ASGI server"],
         ["File upload", "python-multipart", "0.0.32", "Parsing multipart/form-data uploads"],
@@ -432,19 +454,20 @@ def chapter3(R: Report, A: dict, M: dict, D) -> None:
         ["Correctness", "No hard-coded predictions or statistics; all values come from the model or from files written by training."],
         ["Consistency", "Training and inference share ml/preprocess.py, and imputation is stored inside the saved scikit-learn Pipeline."],
         ["Reproducibility", "Fixed random seed (42); re-running training reproduces identical metrics and the analysis script verifies this."],
-        ["Performance", "A 2,000-flow file is uploaded, classified and returned in about 1.2 s, and a 5,000-row raw file in about 1.5 s."],
+        ["Performance", "A 2,000-flow file is uploaded, classified, checked for shift and returned in about 1–3 s."],
+        ["Security", "Text cells that a spreadsheet would run as formulas are neutralised in downloaded CSV files."],
         ["Usability", "Responsive layout from 390 px phones to desktops, clear error messages, colour-blind-safe chart colours."],
         ["Maintainability", "Small modules with one responsibility each; code is commented for explanation in a viva."],
-        ["Testability", "17 automated tests run in about one second using a synthetic model, independent of the real dataset."],
+        ["Testability", "38 automated tests (API, preprocessing, reliability layer) run in about four seconds on synthetic data."],
     ], widths=[1.4, 4.6])
 
     R.heading("3.6", "API specification")
     R.table("REST API Endpoints", ["Method", "Endpoint", "Input", "Output"], [
-        ["GET", "/api/health", "–", "Whether a model is loaded, its name, training time and feature count"],
+        ["GET", "/api/health", "–", "Model status, feature count, and whether the reliability layer and shift gate are active"],
         ["GET", "/api/model/features", "–", "List of the 69 feature columns an upload must contain"],
         ["GET", "/api/metrics", "–", "The evaluation report written by training (metrics.json)"],
-        ["POST", "/api/predict", "multipart file (CSV)", "Summary counts, optional agreement with labels, first 5,000 rows with predictions"],
-        ["POST", "/api/predict/download", "multipart file (CSV)", "The uploaded CSV with Prediction and Malicious_Probability columns"],
+        ["POST", "/api/predict", "multipart file (CSV)", "Benign / review / malicious counts, shift verdict and warning, agreement with labels, first 5,000 rows"],
+        ["POST", "/api/predict/download", "multipart file (CSV)", "The uploaded CSV with prediction, decision and probability columns added"],
     ], widths=[0.6, 1.6, 1.3, 2.5])
     R.table("API Error Responses", ["HTTP status", "Condition", "Example message"], [
         ["400 Bad Request", "Wrong extension, empty file, header only, unparseable CSV", "Please upload a file with a .csv extension."],

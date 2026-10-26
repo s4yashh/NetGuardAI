@@ -1,7 +1,7 @@
 """Chapter 4 (design approach, dataset analysis, methods) of the NetGuard AI report."""
 
 from report.docx_helpers import (
-    Report, m_bar, m_frac, m_paren, m_run, m_sqrt, m_sub, m_subsup, m_sum, m_sup, m_text,
+    Report, m_acc_hat, m_bar, m_frac, m_paren, m_run, m_sqrt, m_sub, m_subsup, m_sum, m_sup, m_text,
 )
 from report.content_part1 import fmt, pct
 
@@ -86,7 +86,7 @@ FEATURE_DESCRIPTIONS = {
 }
 
 
-def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
+def chapter4(R: Report, A: dict, M: dict, D, F, E: dict) -> None:
     raw, dedup = A["raw_rows"], A["dedup_rows"]
     rc, dc = A["raw_label_counts"], A["dedup_label_counts"]
     sample_counts = A["sample_label_counts"]
@@ -114,21 +114,26 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         "values, duplicates, constant and correlated features, and per-attack traffic profiles "
         "(ml/analyze_dataset.py).",
         "**Preprocessing:** clean headers and values, remove duplicates, map labels to two classes.",
-        "**Sampling and splitting:** stratified sample, then stratified train / validation / test split.",
+        "**Sampling and splitting:** stratified sample, then a stratified train / validation / calibration / "
+        "test split, plus a temporal (day-based) protocol for comparison.",
         "**Modelling:** train Random Forest, Decision Tree and Logistic Regression inside scikit-learn "
         "Pipelines.",
         "**Evaluation and selection:** choose the model on the validation set and report all metrics on the "
         "test set, overall and per attack type.",
+        "**Reliability layer:** calibrate the probabilities, set the alert threshold and review band on the "
+        "calibration set, and fit a batch distribution-shift gate on benign training traffic.",
         "**Deployment:** serve the selected Pipeline through FastAPI and visualise it in the React dashboard.",
     ], numbered=True)
 
     R.heading("4.1.2", "System architecture", level=3)
     R.para(
         f"{R.next_fig} shows the architecture. The lower half runs once, offline: the training script reads the "
-        "dataset and writes two artefacts, the model bundle (models/netguard_model.joblib) and the evaluation "
-        "report (reports/metrics.json). The upper half runs for every user request: the browser uploads a CSV "
+        "dataset and writes two artefacts, the model bundle (models/netguard_model.joblib, which also holds the "
+        "calibrator, the decision thresholds and the shift-gate reference profile) and the evaluation report "
+        "(reports/metrics.json). The upper half runs for every user request: the browser uploads a CSV "
         "file to the FastAPI backend, which validates it, prepares the features with the same preprocessing "
-        "module used in training, runs the saved Pipeline and returns JSON (or a CSV file) to the browser. The "
+        "module used in training, runs the saved Pipeline, applies the reliability layer and the shift gate, and "
+        "returns JSON (or a CSV file) to the browser. The "
         "backend never retrains the model, and the dashboard never computes metrics itself; it only displays "
         "what the backend returns."
     )
@@ -355,6 +360,7 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         port = "many" if p["top_port_share"] < 0.05 else f"{p['top_port']} ({100 * p['top_port_share']:.0f}%)"
         pa_rows.append([label, f"{p['Flow Duration'] / 1e6:,.3f}", f"{p['Total Fwd Packets']:,.0f}",
                         f"{p['Total Backward Packets']:,.0f}", f"{p['Flow Bytes/s']:,.1f}", port])
+    R.refs["profiles"] = R.next_table
     R.table("Median Traffic Profile of Each Label", ["Label", "Duration (s)", "Fwd pkts", "Bwd pkts", "Bytes/s", "Top port (share)"],
             pa_rows, widths=[1.75, 0.85, 0.65, 0.65, 0.95, 1.15], font_size=9,
             align=["left", "right", "right", "right", "right", "right"])
@@ -399,6 +405,7 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         f"{R.next_fig} shows the correlation among the fifteen features the model finds "
         "most important."
     )
+    R.refs["corr"] = R.next_table
     R.table("Most Strongly Correlated Feature Pairs", ["Feature A", "Feature B", "r"],
             [[p["a"], p["b"], f"{p['r']:.4f}"] for p in corr["top_pairs"][:12]],
             widths=[2.4, 2.4, 0.8], align=["left", "left", "right"])
@@ -474,47 +481,80 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
     )
     R.figure(F / "fig_sample_vs_population.png", "Share of Each Label in the Cleaned Dataset and in the Training Sample")
     R.para(
-        "The sample is then split in two stages, both stratified on the binary class with random_state = 42. "
-        "First 20% is set aside as the test set. Then 10% of the remaining 80% becomes the validation set. The "
-        f"result is {fmt(split['train'])} training, {fmt(split['validation'])} validation and {fmt(split['test'])} "
-        f"test flows (72% / 8% / 20%). {R.next_table} shows the class balance of each part."
+        "The sample is then split in three stratified stages with random_state = 42: 20% is set aside as the "
+        "test set; 22.5% of the remainder is set aside and divided almost equally into a validation set and a "
+        f"calibration set. The result is {fmt(split['train'])} training, {fmt(split['validation'])} validation, "
+        f"{fmt(split['calibration'])} calibration and {fmt(split['test'])} test flows (62% / 8% / 10% / 20%). "
+        f"{R.next_table} shows the class balance of each part."
     )
     slc = A["split_label_counts"]
-
-    def benign_mal(part):
-        b = slc[part].get("BENIGN", 0)
-        return b, sum(slc[part].values()) - b
     rows = []
-    for part, name in (("train", "Training"), ("val", "Validation"), ("test", "Test")):
-        b, mal = benign_mal(part)
+    for part, name in (("train", "Training"), ("validation", "Validation"), ("calibration", "Calibration"), ("test", "Test")):
+        b = slc[part].get("BENIGN", 0)
+        mal = sum(slc[part].values()) - b
         rows.append([name, fmt(b + mal), fmt(b), fmt(mal), pct(mal / (b + mal))])
-    R.table("Composition of the Training, Validation and Test Sets", ["Set", "Flows", "Benign", "Malicious", "Malicious share"],
+    R.table("Composition of the Training, Validation, Calibration and Test Sets",
+            ["Set", "Flows", "Benign", "Malicious", "Malicious share"],
             rows, widths=[1.2, 1.1, 1.1, 1.1, 1.2], align=["left", "right", "right", "right", "right"])
+    repro = A["reproduces_saved_metrics"]
     R.para(
-        "The three sets have the same malicious share to three decimal places, which confirms the stratification. "
-        "Their roles are strictly separated. The training set is used to fit the models. The validation set is "
-        "used for one decision only, choosing which model to deploy. The test set is used only to report the "
-        "final scores, so it estimates the performance on unseen traffic. As a reproducibility check, the "
-        "dataset analysis script rebuilds the sample and split independently and re-runs the saved model on the "
-        "rebuilt test set; it reproduces the stored confusion matrices of all three models exactly."
+        "All four sets have the same malicious share to three decimal places, which confirms the "
+        "stratification. Their roles are strictly separated. The training set fits the models. The validation "
+        "set is used for one decision, choosing which model to deploy. The calibration set fits the reliability "
+        "layer (Section 4.1.11). The test set is used only to report the final scores, so it estimates the "
+        "performance on unseen traffic. As a reproducibility check, the dataset analysis script rebuilds the "
+        "sample and split independently and runs the saved model on the rebuilt test set. "
+        + ("It reproduces the stored confusion matrix of the deployed Random Forest exactly. "
+           if repro.get("Random Forest") else "")
+        + ("The Decision Tree and Logistic Regression refitted on the rebuilt training set differ from the "
+           "stored results by at most six flows, which is attributable to a different library build; the "
+           "per-attack figures for those two models in Chapter 7 therefore come from the refitted models."
+           if not (repro.get("Decision Tree") and repro.get("Logistic Regression")) else "")
     )
     rare = ["Bot", "Web Attack – Brute Force", "Web Attack – XSS", "Infiltration", "Heartbleed", "Web Attack – Sql Injection"]
-    R.para(f"{R.next_table} shows how the rare attack labels were distributed over the three sets.")
-    R.table("Rare Attack Labels in Each Set", ["Label", "Train", "Validation", "Test"],
-            [[label, fmt(slc["train"].get(label, 0)), fmt(slc["val"].get(label, 0)), fmt(slc["test"].get(label, 0))]
+    R.para(f"{R.next_table} shows how the rare attack labels were distributed over the four sets.")
+    R.table("Rare Attack Labels in Each Set", ["Label", "Train", "Validation", "Calibration", "Test"],
+            [[label] + [fmt(slc[part].get(label, 0)) for part in ("train", "validation", "calibration", "test")]
              for label in rare],
-            widths=[2.4, 1.0, 1.0, 1.0], align=["left", "right", "right", "right"])
+            widths=[2.2, 0.9, 0.9, 0.9, 0.9], align=["left", "right", "right", "right", "right"])
+    R.refs["rare"] = R.prev_table
+    tr = slc["train"]
     R.para(
-        "The table exposes an important property of the data. Only one Heartbleed flow and four Infiltration "
-        "flows are available for training, and SQL injection has a single training example and none in the "
-        "test set. No classifier can learn a reliable pattern from one or four examples, so detection of these "
-        "labels in Chapter 7 must be interpreted with this in mind. Stratifying on the attack label, or keeping "
-        "every flow of the rarest labels, would reduce the problem; this is discussed as a recommendation in "
-        "Chapter 8."
+        "The table exposes an important property of the data. The training set contains "
+        f"{tr.get('Heartbleed', 0)} Heartbleed, {tr.get('Infiltration', 0)} Infiltration and "
+        f"{tr.get('Web Attack – Sql Injection', 0)} SQL injection flows, and SQL injection does not appear in "
+        "the test set at all. No classifier can learn a reliable pattern from a handful of examples, or from "
+        "none, so detection of these labels in Chapter 7 must be interpreted with this in mind. Stratifying on "
+        "the attack label, or keeping every flow of the rarest labels, would reduce the problem; this is "
+        "discussed as a recommendation in Chapter 8."
+    )
+
+    # ------------------------------------------------------------------ protocols
+    R.heading("4.1.8", "Evaluation protocols: random versus temporal", level=3)
+    R.para(
+        "A random split mixes flows from all five days, so training and test flows come from the same hours of "
+        "the same attacks. That answers the question \"can the model recognise more flows of attacks it has "
+        "seen?\" but not \"will it work tomorrow?\". To answer the second question, ml/experiments.py repeats "
+        f"the training under three protocols, defined in {R.next_table}."
+    )
+    em = {k: v["meta"] for k, v in E["protocols"].items()}
+    R.table("Evaluation Protocols", ["Protocol", "Training data", "Calibration data", "Test data", "Test flows"], [
+        ["Random (all days)", "Random 62% of the sample, all days", "Random 10%", "Random 20%", fmt(em["original"]["sizes"]["test"])],
+        ["Random (Mon–Wed)", "Random 62% of Mon–Wed flows", "Random 10%", "Random 20% of Mon–Wed", fmt(em["random_monwed"]["sizes"]["test"])],
+        ["Temporal", "Monday–Wednesday", "Thursday morning", "Thursday afternoon and Friday", fmt(em["temporal"]["sizes"]["test"])],
+    ], widths=[1.15, 1.6, 1.15, 1.4, 0.7], font_size=9)
+    R.para(
+        "The temporal protocol is the realistic one: the model is trained on the first three days and then "
+        "faces later days, which contain attack types that never occurred during training (PortScan, Bot, "
+        "Infiltration, DDoS). Its test set is capped at "
+        f"{fmt(em['temporal']['test_cap_per_class'])} flows per label to keep the large DDoS and PortScan "
+        "classes from dominating, while every flow of the rare labels is kept. The deployed model uses the "
+        "random protocol so that the dashboard reflects the standard benchmark; the temporal results are "
+        "reported in Section 7.6."
     )
 
     # ------------------------------------------------------------------ models
-    R.heading("4.1.8", "Machine learning models", level=3)
+    R.heading("4.1.9", "Machine learning models", level=3)
     R.para(
         "Three classifiers of increasing complexity were compared, all implemented with scikit-learn [24]. "
         "Each is wrapped in a Pipeline together with its preprocessing, so the whole chain is saved and reused "
@@ -578,7 +618,7 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
     )
 
     # ------------------------------------------------------------------ evaluation
-    R.heading("4.1.9", "Evaluation metrics and model selection", level=3)
+    R.heading("4.1.10", "Evaluation metrics and model selection", level=3)
     R.para(
         "Malicious is treated as the positive class. From the test-set confusion matrix, with TP (attacks "
         "correctly flagged), TN (benign flows correctly passed), FP (false alarms) and FN (missed attacks), the "
@@ -608,9 +648,81 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
     )
 
     # ------------------------------------------------------------------ backend
-    R.heading("4.1.10", "Backend design", level=3)
+    # ------------------------------------------------------------------ reliability
+    rel = M["reliability"]
+    cal = rel["calibration"]
+    gate = M["shift_gate"]
+    severe = gate.get("threshold_severe") or next(iter(gate["per_day"].values()))["threshold_severe"]
+    R.heading("4.1.11", "Reliability layer", level=3)
     R.para(
-        "The backend is a FastAPI application (backend/app/main.py) created by a factory function, create_app(), "
+        "A classifier that outputs \"malicious\" whenever its vote fraction reaches 0.5 gives the operator no "
+        "control over how many false alarms to expect, treats a 0.51 vote like a 0.99 vote, and has no way of "
+        "saying that a whole batch looks unlike anything it was trained on. The reliability layer "
+        "(ml/reliability.py) adds these controls on top of the selected Random Forest. All of it is fitted on the "
+        f"calibration set of {fmt(cal['size'])} flows, which the model never trained on, and it is split into two "
+        f"disjoint halves of {fmt(cal['fit_half'])} flows so that the calibration map and the thresholds are not "
+        "fitted on the same examples."
+    )
+    R.para(
+        "**Calibration.** The raw output of a Random Forest is a vote fraction, not a probability. Isotonic "
+        "regression [37] learns a non-decreasing function g that maps the vote fraction s to the observed frequency "
+        f"of malicious flows on the first half of the calibration set ({R.next_eq}). Because g is monotone it never "
+        "changes the ranking of flows, only the scale of the scores."
+    )
+    R.equation(m_run("g = ") + m_sub(m_text("arg min"), m_text("g non-decreasing"))
+               + m_sum(m_run("i"), None, m_sup(m_paren(m_sub(m_run("y"), m_run("i")) + m_run(" − g") + m_paren(m_sub(m_run("s"), m_run("i")))), m_run("2"))))
+    R.para(
+        "**Risk-controlled alert threshold.** The operator chooses a false-positive budget α, the largest "
+        f"acceptable share of benign flows that may raise an alert; NetGuard uses α = {rel['alpha']}. Following "
+        "the Conformal Risk Control idea [38], the threshold t~alert~ is the lowest score at which the false "
+        f"positive rate on the n~0~ benign flows of the second calibration half, corrected for finite samples, "
+        f"stays within α ({R.next_eq})."
+    )
+    R.equation(m_frac(m_sub(m_run("n"), m_run("0")), m_sub(m_run("n"), m_run("0")) + m_run(" + 1"))
+               + m_sub(m_acc_hat("FPR"), m_run("")) + m_paren(m_sub(m_run("t"), m_text("alert")))
+               + m_run(" + ") + m_frac(m_run("1"), m_sub(m_run("n"), m_run("0")) + m_run(" + 1")) + m_run(" ≤ α"))
+    R.para(
+        f"With n~0~ = {fmt(cal['negatives'])} benign calibration flows, the chosen threshold is "
+        f"t~alert~ = {rel['t_alert']:.4f} on the calibrated scale, with an empirical false positive rate of "
+        f"{pct(cal['empirical_fpr'], 3)} on that half. The guarantee holds only if future traffic resembles the "
+        "calibration traffic, which is exactly what the temporal experiment in Section 7.6 tests."
+    )
+    R.para(
+        "**Review band.** Flows just below the alert threshold are the ones the model is least sure about. "
+        "Instead of silently calling them benign, NetGuard sends flows with a calibrated score in "
+        f"[t~benign~, t~alert~) to a human review queue ({R.next_eq}). The lower edge t~benign~ is the widest band "
+        f"whose share of traffic stays within the analyst's review capacity of {pct(rel['review_capacity'], 0)}; "
+        f"the fitted value is t~benign~ = {rel['t_benign']:.4f}."
+    )
+    R.equation(m_text("decision") + m_paren(m_run("x")) + m_run(" = ")
+               + m_paren(m_text("Malicious if g(s) ≥ ") + m_sub(m_run("t"), m_text("alert"))
+                         + m_text(";  Review if ") + m_sub(m_run("t"), m_text("benign")) + m_text(" ≤ g(s) < ")
+                         + m_sub(m_run("t"), m_text("alert")) + m_text(";  Benign otherwise"), "{", ""))
+    R.para(
+        "**Batch distribution-shift gate.** Calibration and thresholds assume that new traffic comes from the "
+        "same distribution as the training traffic. The shift gate checks this assumption for every uploaded "
+        "batch. For each feature j it computes the two-sample Kolmogorov–Smirnov statistic [39] D~j~, the largest "
+        "gap between the cumulative distribution of the batch (n flows) and that of a reference sample of "
+        f"benign training flows (m flows), scaled so that its typical value does not depend on batch size "
+        f"({R.next_eq}). The batch score is the 90th percentile of the scaled statistics over all features, so "
+        "a few strongly shifted features are enough to raise it."
+    )
+    R.equation(m_sub(m_run("S"), m_run("j")) + m_run(" = ") + m_sub(m_text("sup"), m_run("v"))
+               + m_paren(m_sub(m_acc_hat("F"), m_text("batch")) + m_paren(m_run("v")) + m_run(" − ")
+                         + m_sub(m_acc_hat("F"), m_text("ref")) + m_paren(m_run("v")), "|", "|")
+               + m_run(" × ") + m_sqrt(m_frac(m_run("n m"), m_run("n + m"))))
+    R.para(
+        "The gate compares only the flows the model did not flag as malicious, because attacks are supposed to "
+        "look different; it asks whether the *normal* traffic in the batch resembles the normal traffic the "
+        "model learned. Its thresholds are set by bootstrapping 200 batches of 2,000 benign flows from single "
+        f"capture days: the 99th percentile ({gate['threshold']:.2f}) separates in-distribution from shifted "
+        f"batches and the 99.9th percentile ({severe:.2f}) marks severe shift. When a batch is "
+        "shifted the dashboard shows a warning and names the most affected features."
+    )
+
+    R.heading("4.1.12", "Backend design", level=3)
+    R.para(
+        "The backend is a FastAPI [40] application (backend/app/main.py) created by a factory function, create_app(), "
         "which receives the model and metrics paths. The factory makes the application easy to test: the tests "
         "create an app that points at a small synthetic model in a temporary folder. A ModelStore object "
         "(backend/app/model_store.py) loads the joblib bundle on first use, checks that it contains a pipeline, a "
@@ -620,7 +732,8 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         "Every prediction request follows the same path. The upload is checked for a .csv extension, a size "
         "limit of 100 MB and non-empty content; it is parsed with pandas; column names are stripped; the "
         "prepare_features() function from ml/preprocess.py checks that all 69 model features are present and "
-        "numeric and orders them as in training; and the Pipeline returns predictions and probabilities. "
+        "numeric and orders them as in training; the Pipeline returns raw vote fractions, which the reliability "
+        "layer calibrates and turns into decisions; and the shift gate scores the batch. "
         f"{R.next_table} lists the validation rules."
     )
     R.table("Input Validation Rules", ["Check", "Rule", "Response"], [
@@ -632,26 +745,31 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         ["Model", "Saved model file present and loadable", "503"],
     ], widths=[1.1, 3.4, 1.5])
     R.para(
-        "The JSON response contains summary counts computed over every row, the first 5,000 rows for the "
-        "dashboard table (with five readable columns, the prediction, the malicious probability and the actual "
-        "label when present) and, if the file has a Label column, the agreement between predictions and labels. "
-        "The download endpoint returns the whole file with two added columns, so no row is lost however large "
-        "the upload. Cross-origin requests from the Vite development server are allowed, and when the frontend "
+        "The JSON response contains benign, review and malicious counts computed over every row, the shift "
+        "verdict with the most affected features and a warning text when the batch is shifted, the first 5,000 "
+        "rows for the dashboard table (five readable columns, the decision, the calibrated probability, the raw "
+        "vote fraction and the actual label when present) and, if the file has a Label column, the agreement "
+        "between predictions and labels together with the precision and recall of the alerts. The download "
+        "endpoint returns the whole file with the prediction, decision and probability columns added, and "
+        "neutralises text cells beginning with =, +, - or @ so that a spreadsheet cannot execute them as "
+        "formulas (CSV injection). No row is lost however large the upload. Cross-origin requests from the Vite development server are allowed, and when the frontend "
         "has been built the backend also serves it, so the complete application can run on one port."
     )
 
     # ------------------------------------------------------------------ frontend
-    R.heading("4.1.11", "Frontend design", level=3)
+    R.heading("4.1.13", "Frontend design", level=3)
     R.para(
-        "The dashboard is a single-page React application written in TypeScript and styled with Tailwind CSS. "
-        "It uses a dark navy theme with restrained accent colours, Lucide icons and no decorative animation. "
+        "The dashboard is a single-page React [41] application written in TypeScript and styled with Tailwind CSS. "
+        "It is laid out as a console with a navigation sidebar, a dark theme and Lucide icons. "
         f"{R.next_table} lists its components."
     )
     R.table("Frontend Components", ["Component", "Responsibility"], [
-        ["Header", "Product name and live model status from /api/health"],
-        ["UploadPanel", "File picker with drag and drop, Analyze and Clear buttons, validation error display"],
-        ["SummaryCards", "Flows analysed, benign and malicious counts, agreement with labels, composition bar"],
-        ["ResultsTable", "Filter (all / benign / malicious / misclassified), pagination, probability bars, CSV download"],
+        ["ConsoleSidebar", "Navigation between traffic analysis, results and model evaluation"],
+        ["Header", "Live model status, reliability and shift-gate state from /api/health, link to the API reference"],
+        ["UploadPanel", "File picker with drag and drop, input requirements, Analyze and Clear buttons, validation errors"],
+        ["ShiftWarning", "Banner with the batch shift verdict, score, limits and most affected features"],
+        ["SummaryCards", "Flows analysed, benign, malicious and review counts, agreement with labels, composition bar"],
+        ["ResultsTable", "Filter (all / benign / malicious / review / misclassified), pagination, probabilities, CSV download"],
         ["ModelComparison", "Test-set metrics table and grouped bar chart for the three models"],
         ["ConfusionMatrix", "2 × 2 matrix with counts and row percentages, model selector"],
         ["DatasetInfo", "Raw and used flow counts, duplicates removed, train / validation / test split"],
@@ -659,11 +777,10 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         ["api.ts", "Typed API client with readable error messages for network and validation failures"],
     ], widths=[1.6, 4.4])
     R.para(
-        "Colours were chosen by job, not decoration. Benign is blue and malicious red, a pair that remains "
-        "distinguishable for the common forms of colour-vision deficiency (verified with a palette validator), "
-        "and every coloured mark is accompanied by a text label or icon so that colour is never the only cue. "
-        "Each model keeps the same colour in every chart. Bar charts start at zero so that bar lengths are "
-        "honest, and exact values are always available in an adjacent table."
+        "Each decision (benign, review, malicious) has its own colour in the dashboard, but every coloured "
+        "mark is accompanied by a text label or an icon, so the meaning never depends on colour alone. Each "
+        "model keeps the same colour in every chart, bar charts start at zero so that bar lengths are honest, "
+        "and exact values are always available in an adjacent table."
     )
 
     # ------------------------------------------------------------------ 4.2 / 4.3
@@ -702,6 +819,9 @@ def chapter4(R: Report, A: dict, M: dict, D, F) -> None:
         ["Missing values", "Median imputation inside the Pipeline", "Drop rows", "Keeps every uploaded row predictable; robust to skew"],
         ["Primary model", "Random Forest", "Gradient boosting, neural networks", "Strong, fast, needs no scaling, gives feature importance"],
         ["Model choice", "Validation F1 with 0.001 margin", "Best test score", "Test set must not influence decisions"],
+        ["Alert threshold", "Risk-controlled at α = 1%", "Fixed 0.5 vote", "Operator controls the false-alarm budget"],
+        ["Uncertain flows", "Review band (≤ 5% of traffic)", "Forced benign / malicious", "Doubtful flows reach an analyst"],
+        ["Shift detection", "Per-feature KS gate on benign traffic", "None", "Warns when the model is used outside its data"],
         ["Deduplication method", "64-bit row hashing", "pandas drop_duplicates", "Seconds instead of more than nine minutes"],
         ["Serving", "FastAPI + saved joblib Pipeline", "Retrain per request / notebook", "Fast, consistent, automatically documented"],
         ["Frontend", "React + Vite SPA", "Server-rendered templates", "Interactive table and charts, clean API boundary"],

@@ -263,13 +263,18 @@ reproduces the stored confusion matrices, then breaks detection down per attack 
   `-1` in `Init_Win_bytes_*` is a sentinel for flows without a TCP window (e.g. all DNS and NTP flows).
 - 8 features are constant (all bulk features, `Bwd PSH Flags`, `Bwd URG Flags`); 44 pairs have |r| ≥ 0.95 and
   `Fwd PSH Flags` equals `SYN Flag Count` in every row.
-- Random Forest detects ≥ 99.1% of every attack label with at least 100 test flows, but only 68.9% of Bot
-  and 1 of 5 Infiltration / 0 of 3 Heartbleed flows. Those labels have only 4 and 1 training examples.
+- At the default 0.5 vote, Random Forest detects ≥ 99.1% of every attack label with at least 100 test flows but
+  only 68.9% of Bot, 1 of 5 Infiltration and 0 of 3 Heartbleed flows (4 and 0 training examples). The deployed
+  risk-controlled threshold raises Bot to 97.3% and Infiltration to 5 of 5, and sends the Heartbleed flows to review.
+- With the temporal protocol (train Mon–Wed, test Thu–Fri, from `reports/experiments.json`), recall falls to 30.3%:
+  attack types absent from training (PortScan, Bot) are missed. Random-split scores do not predict performance on
+  new traffic.
 
 ## 10. Project report
 
 The report follows the VIT BCSE308P template (Times New Roman 12, 1.5 spacing, roman/arabic page numbers,
-71 pages from Chapter 1 to the References). It is generated from the real results:
+86 pages from Chapter 1 to the References) and is printed in black and white. It is generated from the real
+results in `reports/` (metrics, experiments, dataset analysis):
 
 ```bash
 python -m report.build_report          # writes docs/report/NetGuard_AI_Project_Report.docx

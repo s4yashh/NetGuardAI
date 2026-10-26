@@ -8,14 +8,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 
-from ml.analyze_dataset import BLUE, INK, INK_2, MUTED, ORANGE, RED, setup_matplotlib  # noqa: E402
+from ml.analyze_dataset import INK, INK_2, MUTED, setup_matplotlib  # noqa: E402
 
-LIGHT_BLUE, LIGHT_GRAY, LIGHT_RED = "#e8f0fb", "#f3f4f6", "#fdecec"
+# Black-and-white diagrams: white boxes with black outlines.
+LIGHT_BLUE = LIGHT_GRAY = LIGHT_RED = "white"
+BLUE = RED = ORANGE = "black"
 
 
-def _box(ax, x, y, w, h, title, body="", fill=LIGHT_BLUE, edge=BLUE, size=9.5):
+def _box(ax, x, y, w, h, title, body="", fill="white", edge="black", size=9.5):
     ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.02,rounding_size=0.08",
-                                facecolor=fill, edgecolor=edge, linewidth=1.2))
+                                facecolor="white", edgecolor="black", linewidth=1.0))
     if body:
         ax.text(x + w / 2, y + h - 0.16, title, ha="center", va="top", fontsize=size,
                 fontweight="bold", color=INK)
@@ -26,7 +28,7 @@ def _box(ax, x, y, w, h, title, body="", fill=LIGHT_BLUE, edge=BLUE, size=9.5):
                 fontweight="bold", color=INK)
 
 
-def _arrow(ax, start, end, text="", color=INK_2, offset=(0, 0.12), style="-|>", rad=0.0):
+def _arrow(ax, start, end, text="", color="black", offset=(0, 0.12), style="-|>", rad=0.0):
     ax.add_patch(FancyArrowPatch(start, end, arrowstyle=style, mutation_scale=12, color=color,
                                  linewidth=1.2, connectionstyle=f"arc3,rad={rad}"))
     if text:
@@ -49,7 +51,7 @@ def architecture(path: Path) -> None:
          "React + Vite + TypeScript\nTailwind CSS, Recharts\nupload, results table,\ncharts, CSV download")
     _box(ax, 2.35, 2.55, 1.95, 1.6, "FastAPI backend",
          "/api/health\n/api/metrics\n/api/predict\n/api/predict/download")
-    _box(ax, 4.65, 3.4, 1.6, 0.75, "ModelStore", "loads joblib bundle", fill=LIGHT_GRAY, edge=MUTED)
+    _box(ax, 4.65, 3.4, 1.6, 0.75, "ModelStore", "RF + calibration,\nthresholds, shift gate")
     _box(ax, 4.65, 2.55, 1.6, 0.7, "preprocess.py", "same cleaning as training",
          fill=LIGHT_GRAY, edge=MUTED)
     _arrow(ax, (2.0, 3.55), (2.35, 3.55), "CSV")
@@ -62,7 +64,7 @@ def architecture(path: Path) -> None:
     _box(ax, 0.15, 0.35, 1.85, 1.45, "CIC-IDS2017",
          "8 CSV files\n2,830,743 flows\n78 features + Label", fill=LIGHT_RED, edge=RED)
     _box(ax, 2.35, 0.35, 1.95, 1.45, "ml/train.py",
-         "clean → deduplicate →\nsample → split →\ntrain RF / DT / LR →\nevaluate → select")
+         "clean → deduplicate →\nsample → 4-way split →\ntrain RF / DT / LR →\ncalibrate → shift gate")
     _box(ax, 4.65, 1.05, 1.6, 0.75, "models/", "netguard_model.joblib", fill=LIGHT_GRAY, edge=MUTED)
     _box(ax, 4.65, 0.35, 1.6, 0.6, "reports/", "metrics.json", fill=LIGHT_GRAY, edge=MUTED)
     _arrow(ax, (2.0, 1.05), (2.35, 1.05))
@@ -100,10 +102,10 @@ def flow_concept(path: Path) -> None:
            (5.6, 0.6, "FIN")]
     bwd = [(0.45, 0.6, "SYN,ACK"), (2.2, 2.4, "PSH,ACK"), (2.9, 2.4, "PSH,ACK"), (5.9, 0.6, "FIN")]
     for t, size, flag in fwd:
-        ax.bar(t, size, width=0.16, bottom=0.15, color=BLUE)
+        ax.bar(t, size, width=0.16, bottom=0.15, color="#555555", edgecolor="black")
         ax.text(t, 0.15 + size + 0.08, flag, ha="center", fontsize=7.5, color=INK_2)
     for t, size, flag in bwd:
-        ax.bar(t, -size, width=0.16, bottom=-0.15, color=ORANGE)
+        ax.bar(t, -size, width=0.16, bottom=-0.15, color="white", edgecolor="black", hatch="////")
         ax.text(t, -0.15 - size - 0.12, flag, ha="center", va="top", fontsize=7.5, color=INK_2)
     ax.axhline(0, color=INK_2, linewidth=1)
     ax.annotate("", xy=(5.9, 2.25), xytext=(0.0, 2.25),
@@ -135,17 +137,18 @@ def preprocessing(path: Path, a: dict, m: dict) -> None:
         ("Remove exact duplicate rows", f"{raw - dedup:,} removed → {dedup:,} unique flows"),
         ("Stratified sample", f"{m['dataset']['rows_used']:,} flows, class ratio kept"),
         ("Stratified split (seed 42)",
-         f"train {split['train']:,} · validation {split['validation']:,} · test {split['test']:,}"),
+         f"train {split['train']:,} · validation {split['validation']:,} · "
+         f"calibration {split['calibration']:,} · test {split['test']:,}"),
         ("Drop constant features", f"{m['features']['count']} of 77 features kept"),
         ("Pipeline: median imputer → [scaler] → model", "fitted on the training set only"),
+        ("Reliability layer", "isotonic calibration + risk-controlled thresholds on the calibration set"),
     ]
-    fig, ax = _canvas(6.2, 5.6)
-    h, gap, top = 0.52, 0.16, 5.5
+    fig, ax = _canvas(6.2, 6.3)
+    h, gap, top = 0.52, 0.16, 6.2
     for i, (title, body) in enumerate(steps):
         y = top - (i + 1) * h - i * gap
         ax.add_patch(FancyBboxPatch((0.4, y), 5.4, h, boxstyle="round,pad=0.02,rounding_size=0.06",
-                                    facecolor=LIGHT_BLUE if i < 6 else LIGHT_GRAY,
-                                    edgecolor=BLUE if i < 6 else MUTED, linewidth=1.1))
+                                    facecolor="white", edgecolor="black", linewidth=1.0))
         ax.text(0.6, y + h / 2, f"{i + 1}", ha="center", va="center", fontsize=10,
                 fontweight="bold", color=BLUE)
         ax.text(0.85, y + h * 0.66, title, va="center", fontsize=9.5, fontweight="bold", color=INK)
@@ -159,7 +162,7 @@ def preprocessing(path: Path, a: dict, m: dict) -> None:
 def gantt(path: Path, tasks: list[tuple[str, int, int]]) -> None:
     fig, ax = plt.subplots(figsize=(6.4, 3.6))
     for i, (name, start, length) in enumerate(tasks):
-        ax.barh(i, length, left=start - 1, height=0.55, color=BLUE)
+        ax.barh(i, length, left=start - 1, height=0.55, color="#8c8c8c", edgecolor="black")
     ax.set_yticks(range(len(tasks)), [t[0] for t in tasks], fontsize=8.5)
     ax.invert_yaxis()
     weeks = max(s + l - 1 for _, s, l in tasks)

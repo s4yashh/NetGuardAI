@@ -18,6 +18,7 @@ from report import content_part1 as p1
 from report import content_part2 as p2
 from report import content_part3 as p3
 from report.diagrams import draw_all
+from report.experiment_figures import draw_all as draw_experiments
 from report.docx_helpers import Report
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,7 +33,7 @@ DEGREE = ("Bachelor of Computer Science and Engineering (Artificial Intelligence
           "Bachelor of Computer Science and Engineering (Cyber Security)")
 
 
-def cover(R: Report) -> None:
+def cover(R: Report, gray: Path) -> None:
     R.spacer(10)
     R.centered(TITLE, size=18, bold=True, space_after=8)
     R.centered("BCSE308P – COURSE PROJECT", size=14, bold=True, space_after=22)
@@ -48,7 +49,7 @@ def cover(R: Report) -> None:
     R.centered("<Register Numbers>", size=14, bold=True, space_after=24, highlight=True)
     p = R.doc.add_paragraph()
     p.alignment = 1
-    p.add_run().add_picture(str(ASSETS / "vit_logo.png"), width=Inches(2.9))
+    p.add_run().add_picture(str(gray / "vit_logo.png"), width=Inches(2.9))
     R.spacer(10)
     R.centered("School of Computer Science Engineering and Information Systems [SCORE]", size=12, bold=True,
                space_after=4)
@@ -123,23 +124,24 @@ def acknowledgement(R: Report) -> None:
     R.page_break()
 
 
-def executive_summary(R: Report, A: dict, M: dict) -> str:
+def executive_summary(R: Report, A: dict, M: dict, E: dict) -> str:
     rf = next(m for m in M["models"] if m["name"] == "Random Forest")
+    dep = M["reliability"]["variants"][2]
+    temporal = E["protocols"]["temporal"]["variants"][0]
     text = (
         "NetGuard AI is a web application that detects malicious network traffic by applying machine learning "
-        f"to network flow records. It is built on the public CIC-IDS2017 dataset, whose {A['raw_rows']:,} flows "
-        "were analysed in detail. The analysis found "
-        f"{A['raw_rows'] - A['dedup_rows']:,} exact duplicate rows, infinite and missing rate values caused by "
-        "zero-duration flows, protocol sentinel values, eight constant features and an extremely uneven "
-        "distribution of attack types. A preprocessing pipeline removes duplicates before a stratified "
-        "500,000-flow sample is split into training, validation and test sets. Random Forest, Decision Tree "
-        "and Logistic Regression were trained and compared; the Random Forest, selected on the validation set, "
-        f"achieved {100 * rf['accuracy']:.2f}% accuracy, {100 * rf['precision']:.2f}% precision, "
-        f"{100 * rf['recall']:.2f}% recall and an F1-score of {100 * rf['f1_score']:.2f}% on 100,000 unseen "
-        "flows. A per-attack evaluation showed near-perfect detection of denial-of-service, port-scan and "
-        "brute-force attacks but weak detection of the rarest labels, a direct consequence of the dataset. The "
-        "model is served through a validated FastAPI backend and a React dashboard that accepts CSV uploads, "
-        "shows predictions and genuine evaluation metrics, and exports the results."
+        f"to network flow records from the public CIC-IDS2017 dataset, whose {A['raw_rows']:,} flows were "
+        f"analysed in detail. The analysis found {A['raw_rows'] - A['dedup_rows']:,} exact duplicates, infinite "
+        "and missing values caused by zero-duration flows, protocol sentinel values, constant features and an "
+        "extremely uneven distribution of attack types. After cleaning, a stratified 500,000-flow sample was "
+        "split into training, validation, calibration and test sets. Random Forest, Decision Tree and Logistic "
+        f"Regression were compared; the selected Random Forest reached an F1-score of {100 * rf['f1_score']:.2f}% "
+        "on 100,000 unseen flows. A reliability layer calibrates its probabilities, keeps false alarms within a "
+        f"1% budget while raising recall to {100 * dep['recall']:.2f}%, routes uncertain flows to review and warns "
+        "when an uploaded batch differs from the training traffic. A temporal experiment showed that recall "
+        f"falls to {100 * temporal['recall']:.1f}% on capture days with attack types absent from training, the "
+        "key limitation of random-split evaluation. The model is served through a FastAPI backend and a React "
+        "dashboard."
     )
     R.spacer(120)
     R.front_heading("Executive Summary", "Executive Summary")
@@ -151,7 +153,8 @@ def executive_summary(R: Report, A: dict, M: dict) -> str:
 def abbreviations(R: Report) -> None:
     R.front_heading("List of Abbreviations", "Abbreviations")
     items = [
-        ("ACK", "Acknowledgement (TCP flag)"), ("API", "Application Programming Interface"),
+        ("ACK", "Acknowledgement (TCP flag)"), ("CDF", "Cumulative Distribution Function"),
+        ("CRC", "Conformal Risk Control"), ("ECE", "Expected Calibration Error"), ("KS", "Kolmogorov–Smirnov (test)"), ("API", "Application Programming Interface"),
         ("AUC", "Area Under the Curve"), ("AP", "Average Precision"),
         ("CIC", "Canadian Institute for Cybersecurity"), ("CIC-IDS2017", "CIC Intrusion Detection Evaluation Dataset 2017"),
         ("CORS", "Cross-Origin Resource Sharing"), ("CSV", "Comma-Separated Values"),
@@ -192,6 +195,10 @@ def symbols(R: Report) -> None:
         ("μⱼ, σⱼ", "Mean and standard deviation of feature j (training set)"), ("zᵢⱼ", "Standardised feature value"),
         ("r", "Pearson correlation coefficient"), ("TP, TN, FP, FN", "Confusion-matrix counts"),
         ("F₁", "F1-score"), ("µs", "Microsecond (unit of Flow Duration)"),
+        ("α", "False-positive budget of the alert threshold (0.01)"), ("g(·)", "Isotonic calibration map"),
+        ("t_alert, t_benign", "Alert threshold and lower edge of the review band"),
+        ("n₀", "Number of benign flows in the threshold half of the calibration set"),
+        ("Sⱼ", "Scaled Kolmogorov–Smirnov statistic of feature j in the shift gate"),
     ]
     _two_column_list(R, items, 1.7)
 
@@ -213,18 +220,34 @@ def _two_column_list(R: Report, items, first_width: float) -> None:
         row.cells[1].width = Inches(6.0 - first_width)
 
 
+def grayscale_assets() -> Path:
+    """Black-and-white copies of the screenshots and the logo for a print-friendly report."""
+    from PIL import Image
+
+    out = ASSETS / "gray"
+    out.mkdir(exist_ok=True)
+    for path in list(ASSETS.glob("shot_*.png")) + [ASSETS / "vit_logo.png"]:
+        Image.open(path).convert("L").save(out / path.name)
+    return out
+
+
 def build() -> Path:
     A = json.loads((ROOT / "reports" / "dataset_analysis.json").read_text())
     M = json.loads((ROOT / "reports" / "metrics.json").read_text())
+    E = json.loads((ROOT / "reports" / "experiments.json").read_text())
+    API = {name: json.loads((ASSETS / "api" / f"{file}.json").read_text()) for name, file in (
+        ("demo", "demo_test_flows"), ("shifted", "demo_shifted_flows"), ("raw_wed", "raw_wednesday_first5000"))}
     draw_all(DIAGRAMS, A, M, p3.SCHEDULE)
+    draw_experiments(DIAGRAMS, E, M)
+    GRAY = grayscale_assets()
 
     R = Report()
     R.front_matter_numbering()
-    cover(R)
+    cover(R, GRAY)
     declaration(R)
     certificate(R)
     acknowledgement(R)
-    summary = executive_summary(R, A, M)
+    summary = executive_summary(R, A, M, E)
     R.toc("CONTENTS", "C")
     R.page_break()
     R.toc("List of Figures", "F", ("Figure No.", "Title", "Page No."))
@@ -238,15 +261,15 @@ def build() -> Path:
     p1.chapter1(R, A, M, DIAGRAMS)
     p1.chapter2(R, A, M, DIAGRAMS)
     p1.chapter3(R, A, M, DIAGRAMS)
-    p2.chapter4(R, A, M, DIAGRAMS, FIGURES)
+    p2.chapter4(R, A, M, DIAGRAMS, FIGURES, E)
     p3.chapter5(R, A, M, DIAGRAMS)
-    p3.chapter6(R, A, M, ASSETS)
-    p3.chapter7(R, A, M, FIGURES)
-    p3.chapter8(R, A, M)
-    p3.chapter9(R)
+    p3.chapter6(R, A, M, GRAY)
+    p3.chapter7(R, A, M, FIGURES, E, DIAGRAMS, API)
+    p3.chapter8(R, A, M, E)
+    p3.chapter9(R, p3.renumber_citations(R))
 
     R.start_appendix_section()
-    p3.appendix(R, A, M)
+    p3.appendix(R, A, M, API)
     R.save(OUTPUT)
     print(f"Saved {OUTPUT}")
     print(f"Executive summary: {len(summary.split())} words")

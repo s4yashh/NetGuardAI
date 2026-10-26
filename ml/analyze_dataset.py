@@ -33,15 +33,14 @@ from sklearn.metrics import (  # noqa: E402
     roc_curve,
 )
 
-from ml import config  # noqa: E402
+from ml import config, reliability  # noqa: E402
 from ml.preprocess import clean_column_names, to_binary_labels  # noqa: E402
 from ml.train import (  # noqa: E402
+    DAY_COLUMN,
+    _xy,
     build_models,
-    clean_frame,
-    dataset_files,
-    read_raw_csv,
-    remove_duplicates,
-    split_data,
+    build_splits,
+    day_from_filename,
     stratified_sample,
 )
 
@@ -49,10 +48,14 @@ FIGURES_DIR = config.REPORTS_DIR / "figures"
 OUTPUT_PATH = config.REPORTS_DIR / "dataset_analysis.json"
 SAMPLE_SIZE = 500_000  # must match the default in ml/train.py
 
-# Colours validated for colour-vision deficiency on a white page.
-BLUE, ORANGE, AQUA, RED = "#2a78d6", "#eb6834", "#1baf7a", "#e34948"
-INK, INK_2, MUTED, GRID = "#0b0b0b", "#52514e", "#898781", "#e1e0d9"
-MODEL_COLORS = {"Random Forest": BLUE, "Decision Tree": ORANGE, "Logistic Regression": AQUA}
+# Black-and-white figures for a printed report: series differ by gray level, hatch
+# pattern and line style, never by colour.
+BLUE, ORANGE, AQUA, RED = "#3a3a3a", "#8c8c8c", "#cfcfcf", "#d9d9d9"   # names kept for readability
+INK, INK_2, MUTED, GRID = "#000000", "#333333", "#7a7a7a", "#e0e0e0"
+MODEL_COLORS = {"Random Forest": "#2b2b2b", "Decision Tree": "#8c8c8c", "Logistic Regression": "#d4d4d4"}
+MODEL_HATCH = {"Random Forest": "", "Decision Tree": "", "Logistic Regression": "////"}
+MALICIOUS_HATCH = "////"
+LINE_STYLES = {"Random Forest": "-", "Decision Tree": "--", "Logistic Regression": ":"}
 
 DAYS = {"Monday": "Mon 3 Jul", "Tuesday": "Tue 4 Jul", "Wednesday": "Wed 5 Jul",
         "Thursday": "Thu 6 Jul", "Friday": "Fri 7 Jul"}
@@ -110,7 +113,9 @@ def setup_matplotlib() -> None:
         "grid.color": GRID, "grid.linewidth": 0.6, "axes.axisbelow": True,
         "axes.spines.top": False, "axes.spines.right": False,
         "legend.frameon": False, "figure.dpi": 100, "savefig.dpi": 220,
-        "savefig.bbox": "tight",
+        "savefig.bbox": "tight", "patch.force_edgecolor": True, "patch.edgecolor": "black",
+        "patch.linewidth": 0.6, "hatch.linewidth": 0.6, "hatch.color": "black",
+        "image.cmap": "Greys",
     })
 
 
@@ -122,6 +127,38 @@ def save(fig, name: str) -> None:
 
 def day_of(file_name: str) -> str:
     return next(d for d in DAYS if file_name.lower().startswith(d.lower()))
+
+
+def dataset_files(data_dir: Path) -> list[Path]:
+    files = sorted(data_dir.glob("*.csv"))
+    if not files:
+        raise SystemExit(f"No CSV files found in {data_dir}. See README.md to download CIC-IDS2017.")
+    return files
+
+
+def read_raw_csv(path: Path) -> pd.DataFrame:
+    """Read one file exactly as published (latin-1: Web Attack labels contain byte 0x96)."""
+    return pd.read_csv(path, encoding="latin-1", low_memory=False)
+
+
+def clean_frame(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
+    """The same cleaning as ml.train.load_dataset: tidy headers, drop unlabelled rows,
+    numeric float32 features with +/-inf as NaN, and the capture-day column."""
+    df = clean_column_names(df)
+    df = df.dropna(subset=[config.LABEL_COLUMN])
+    df[config.LABEL_COLUMN] = df[config.LABEL_COLUMN].astype(str).str.strip()
+    df[DAY_COLUMN] = day_from_filename(file_name)
+    feature_cols = [c for c in df.columns if c not in (config.LABEL_COLUMN, DAY_COLUMN)]
+    df[feature_cols] = (df[feature_cols].apply(pd.to_numeric, errors="coerce")
+                        .replace([np.inf, -np.inf], np.nan).astype(np.float32))
+    return df
+
+
+def remove_duplicates(data: pd.DataFrame) -> pd.DataFrame:
+    """Drop exact duplicates (all features + label, ignoring the day), keeping the first,
+    exactly as ml.train.load_dataset does."""
+    hashes = pd.util.hash_pandas_object(data.drop(columns=[DAY_COLUMN]), index=False)
+    return data[~hashes.duplicated().to_numpy()].reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------
@@ -153,7 +190,7 @@ def analyse_raw_files(files: list[Path]) -> tuple[pd.DataFrame, dict]:
             "malicious": int(len(raw) - counts.get("BENIGN", 0)),
             "labels": {k: int(v) for k, v in counts.items()},
         })
-        frames.append(clean_frame(raw))
+        frames.append(clean_frame(raw, path.name))
         del raw, named, numeric
 
     data = pd.concat(frames, ignore_index=True)
@@ -196,8 +233,8 @@ def fig_flows_per_file(per_file: list[dict]) -> None:
     malicious = np.array([r["malicious"] for r in rows]) / 1000
     fig, ax = plt.subplots(figsize=(6.2, 3.4))
     y = np.arange(len(rows))
-    ax.barh(y, benign, height=0.55, color=BLUE, label="Benign")
-    ax.barh(y, malicious, left=benign + benign.max() * 0.004, height=0.55, color=RED,
+    ax.barh(y, benign, height=0.55, color="#8c8c8c", label="Benign")
+    ax.barh(y, malicious, left=benign, height=0.55, color="white", hatch=MALICIOUS_HATCH,
             label="Malicious")
     ax.set_yticks(y, names)
     ax.invert_yaxis()
@@ -215,7 +252,7 @@ def fig_label_distribution(raw_counts: dict, dedup_counts: dict) -> None:
     labels = sorted(raw_counts, key=lambda k: -raw_counts[k])
     fig, ax = plt.subplots(figsize=(6.2, 4.4))
     y = np.arange(len(labels))
-    ax.barh(y, [raw_counts[k] for k in labels], height=0.6, color=BLUE)
+    ax.barh(y, [raw_counts[k] for k in labels], height=0.6, color="#8c8c8c")
     ax.set_xscale("log")
     ax.set_yticks(y, labels)
     ax.invert_yaxis()
@@ -233,7 +270,7 @@ def fig_duplicates(raw_counts: dict, dedup_counts: dict) -> None:
     share = [100 * (1 - dedup_counts.get(k, 0) / raw_counts[k]) for k in labels]
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     y = np.arange(len(labels))
-    ax.barh(y, share, height=0.6, color=ORANGE)
+    ax.barh(y, share, height=0.6, color="#8c8c8c")
     ax.set_yticks(y, labels)
     ax.invert_yaxis()
     ax.set_xlabel("Rows removed as exact duplicates (%)")
@@ -252,7 +289,7 @@ def fig_data_quality(quality: dict) -> None:
     names = sorted(issues, key=lambda k: -issues[k])
     fig, ax = plt.subplots(figsize=(6.2, 3.8))
     y = np.arange(len(names))
-    ax.barh(y, [issues[k] for k in names], height=0.6, color=BLUE)
+    ax.barh(y, [issues[k] for k in names], height=0.6, color="#8c8c8c")
     ax.set_xscale("log")
     ax.set_yticks(y, names)
     ax.invert_yaxis()
@@ -270,8 +307,8 @@ def fig_feature_groups(constant: list[str]) -> None:
     dropped = [len([f for f in FEATURE_GROUPS[g] if f in constant]) for g in names]
     fig, ax = plt.subplots(figsize=(6.2, 3.2))
     y = np.arange(len(names))
-    ax.barh(y, kept, height=0.55, color=BLUE, label="Used by the model")
-    ax.barh(y, dropped, left=np.array(kept) + 0.08, height=0.55, color=MUTED,
+    ax.barh(y, kept, height=0.55, color="#8c8c8c", label="Used by the model")
+    ax.barh(y, dropped, left=np.array(kept), height=0.55, color="white", hatch="////",
             label="Dropped (constant)")
     ax.set_yticks(y, names)
     ax.invert_yaxis()
@@ -293,10 +330,10 @@ def fig_feature_boxplots(df: pd.DataFrame) -> None:
         data = [np.log10(col[y == c].dropna() + 1) for c in (0, 1)]
         parts = ax.boxplot(data, widths=0.5, showfliers=False, patch_artist=True,
                            medianprops={"color": INK, "linewidth": 1.2})
-        for patch, color in zip(parts["boxes"], (BLUE, RED)):
+        for patch, color, hatch in zip(parts["boxes"], ("#8c8c8c", "white"), ("", MALICIOUS_HATCH)):
             patch.set_facecolor(color)
-            patch.set_alpha(0.85)
-            patch.set_edgecolor(color)
+            patch.set_hatch(hatch)
+            patch.set_edgecolor("black")
         for key in ("whiskers", "caps"):
             for line in parts[key]:
                 line.set_color(INK_2)
@@ -311,10 +348,10 @@ def fig_feature_boxplots(df: pd.DataFrame) -> None:
 def fig_flow_duration_ecdf(df: pd.DataFrame) -> None:
     y = to_binary_labels(df[config.LABEL_COLUMN])
     fig, ax = plt.subplots(figsize=(6.2, 3.2))
-    for cls, name, color in ((0, "Benign", BLUE), (1, "Malicious", RED)):
+    for cls, name, style in ((0, "Benign", "-"), (1, "Malicious", "--")):
         v = np.sort(df.loc[y == cls, "Flow Duration"].astype(np.float64).clip(lower=1).dropna())
-        ax.plot(v / 1e6, np.arange(1, len(v) + 1) / len(v), color=color, linewidth=2,
-                label=name)
+        ax.plot(v / 1e6, np.arange(1, len(v) + 1) / len(v), color="black", linestyle=style,
+                linewidth=1.8, label=name)
     ax.set_xscale("log")
     ax.set_xlabel("Flow duration (seconds, log scale)")
     ax.set_ylabel("Share of flows ≤ duration")
@@ -326,7 +363,7 @@ def fig_flow_duration_ecdf(df: pd.DataFrame) -> None:
 def fig_correlation(corr: pd.DataFrame, features: list[str]) -> None:
     sub = corr.loc[features, features]
     fig, ax = plt.subplots(figsize=(6.4, 5.6))
-    im = ax.imshow(sub.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1)
+    im = ax.imshow(sub.to_numpy(), cmap="gray_r", vmin=-1, vmax=1)
     ax.set_xticks(range(len(features)), features, rotation=90, fontsize=8)
     ax.set_yticks(range(len(features)), features, fontsize=8)
     ax.grid(False)
@@ -338,12 +375,12 @@ def fig_correlation(corr: pd.DataFrame, features: list[str]) -> None:
 
 def fig_top_ports(ports: dict) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(6.4, 3.4))
-    for ax, (name, color) in zip(axes, (("Benign", BLUE), ("Malicious", RED))):
+    for ax, (name, color) in zip(axes, (("Benign", "#8c8c8c"), ("Malicious", "white"))):
         items = list(ports[name].items())[:10]
         labels = [str(p) for p, _ in items]
         values = [v / 1000 for _, v in items]
         y = np.arange(len(items))
-        ax.barh(y, values, height=0.6, color=color)
+        ax.barh(y, values, height=0.6, color=color, hatch=MALICIOUS_HATCH if name == "Malicious" else "")
         ax.set_yticks(y, labels)
         ax.invert_yaxis()
         ax.set_title(f"{name} flows", fontsize=10)
@@ -359,10 +396,10 @@ def fig_sample_vs_population(pop: dict, sample: dict) -> None:
     p_tot, s_tot = sum(pop.values()), sum(sample.values())
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     y = np.arange(len(labels))
-    ax.scatter([100 * pop[k] / p_tot for k in labels], y, s=60, color=BLUE,
-               label="Cleaned dataset", zorder=3, edgecolors="white", linewidths=1.5)
-    ax.scatter([100 * sample.get(k, 0) / s_tot for k in labels], y, s=22, color=ORANGE,
-               label="500,000-flow sample", zorder=4)
+    ax.scatter([100 * pop[k] / p_tot for k in labels], y, s=70, facecolors="white",
+               edgecolors="black", linewidths=1.2, label="Cleaned dataset", zorder=3)
+    ax.scatter([100 * sample.get(k, 0) / s_tot for k in labels], y, s=18, color="black",
+               marker="x", label="500,000-flow sample", zorder=4)
     ax.set_xscale("log")
     ax.set_yticks(y, labels)
     ax.invert_yaxis()
@@ -381,7 +418,7 @@ def fig_model_comparison(models: list[dict]) -> None:
     for i, m in enumerate(models):
         values = [100 * m[k] for k, _ in metrics]
         ax.bar(x + (i - 1) * (width + 0.01), values, width, color=MODEL_COLORS[m["name"]],
-               label=m["name"])
+               hatch=MODEL_HATCH[m["name"]], label=m["name"])
     ax.set_xticks(x, [label for _, label in metrics])
     ax.set_ylim(0, 100)
     ax.set_ylabel("Score on test set (%)")
@@ -395,12 +432,12 @@ def fig_confusion_matrices(models: list[dict]) -> None:
     for ax, m in zip(axes, models):
         cm = np.array(m["confusion_matrix"])
         share = cm / cm.sum(axis=1, keepdims=True)
-        ax.imshow(share, cmap="Blues", vmin=0, vmax=1)
+        ax.imshow(share, cmap="Greys", vmin=0, vmax=1.4)
         for i in range(2):
             for j in range(2):
                 ax.text(j, i, f"{cm[i, j]:,}\n{100 * share[i, j]:.2f}%", ha="center",
                         va="center", fontsize=8.5,
-                        color="white" if share[i, j] > 0.5 else INK)
+                        color="white" if share[i, j] > 0.75 else INK)
         ax.set_xticks([0, 1], ["Benign", "Malicious"], fontsize=8.5)
         ax.set_yticks([0, 1], ["Benign", "Malicious"], fontsize=8.5)
         ax.set_title(m["name"], fontsize=10)
@@ -418,7 +455,7 @@ def fig_per_attack(per_label: dict, support: dict) -> None:
     h = 0.26
     for i, name in enumerate(MODEL_COLORS):
         ax.barh(y + (i - 1) * (h + 0.01), [100 * per_label[name][k] for k in labels], h,
-                color=MODEL_COLORS[name], label=name)
+                color=MODEL_COLORS[name], hatch=MODEL_HATCH[name], label=name)
     ax.set_yticks(y, [f"{k} (n={support[k]:,})" for k in labels], fontsize=8.5)
     ax.invert_yaxis()
     ax.set_xlabel("Detection rate on test set (recall, %)")
@@ -432,7 +469,7 @@ def fig_feature_importance(importances: list[dict]) -> None:
     items = importances[:15]
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     y = np.arange(len(items))
-    ax.barh(y, [100 * i["importance"] for i in items], height=0.6, color=BLUE)
+    ax.barh(y, [100 * i["importance"] for i in items], height=0.6, color="#8c8c8c")
     ax.set_yticks(y, [i["feature"] for i in items])
     ax.invert_yaxis()
     ax.set_xlabel("Mean decrease in Gini impurity (%)")
@@ -443,9 +480,10 @@ def fig_feature_importance(importances: list[dict]) -> None:
 def fig_probability_hist(proba: np.ndarray, y_test: np.ndarray) -> None:
     fig, ax = plt.subplots(figsize=(6.2, 3.2))
     bins = np.linspace(0, 1, 21)
-    for cls, name, color in ((0, "Actual benign", BLUE), (1, "Actual malicious", RED)):
-        ax.hist(proba[y_test == cls], bins=bins, color=color, alpha=0.85, label=name,
-                rwidth=0.9)
+    for cls, name, color, hatch in ((0, "Actual benign", "#8c8c8c", ""),
+                                    (1, "Actual malicious", "white", MALICIOUS_HATCH)):
+        ax.hist(proba[y_test == cls], bins=bins, color=color, hatch=hatch, label=name,
+                rwidth=0.9, edgecolor="black", alpha=0.9)
     ax.set_yscale("log")
     ax.axvline(0.5, color=INK_2, linewidth=1)
     ax.text(0.51, ax.get_ylim()[1] * 0.4, "decision threshold 0.5", fontsize=8.5, color=INK_2)
@@ -461,8 +499,8 @@ def fig_roc_pr(y_test: np.ndarray, scores: dict) -> None:
     for name, s in scores.items():
         fpr, tpr, _ = roc_curve(y_test, s)
         prec, rec, _ = precision_recall_curve(y_test, s)
-        axes[0].plot(fpr, tpr, color=MODEL_COLORS[name], linewidth=2, label=name)
-        axes[1].plot(rec, prec, color=MODEL_COLORS[name], linewidth=2, label=name)
+        axes[0].plot(fpr, tpr, color="black", linestyle=LINE_STYLES[name], linewidth=1.6, label=name)
+        axes[1].plot(rec, prec, color="black", linestyle=LINE_STYLES[name], linewidth=1.6, label=name)
     axes[0].set_xscale("log")
     axes[0].set_xlim(1e-4, 1)
     axes[0].set_xlabel("False positive rate (log)")
@@ -502,7 +540,7 @@ def main() -> None:
     result["raw_class_counts"] = {"Benign": raw_benign,
                                   "Malicious": result["raw_rows"] - raw_benign}
 
-    features = [c for c in dedup.columns if c != config.LABEL_COLUMN]
+    features = [c for c in dedup.columns if c not in (config.LABEL_COLUMN, DAY_COLUMN)]
     constant = [c for c in features if dedup[c].nunique(dropna=False) <= 1]
     result["features"] = {"count": len(features), "constant_in_full_dataset": constant,
                           "groups": FEATURE_GROUPS}
@@ -546,18 +584,18 @@ def main() -> None:
     sample = stratified_sample(dedup, SAMPLE_SIZE)
     sample_counts = {k: int(v) for k, v in sample[config.LABEL_COLUMN].value_counts().items()}
     result["sample_label_counts"] = sample_counts
-    split = split_data(sample)
+    splits, _ = build_splits(sample, "original")
     result["split_label_counts"] = {
-        part: {k: int(v) for k, v in split[f"labels_{part}"].value_counts().items()}
-        for part in ("train", "val", "test")
+        part: {k: int(v) for k, v in frame[config.LABEL_COLUMN].value_counts().items()}
+        for part, frame in splits.items()
     }
 
     metrics = json.loads(config.METRICS_PATH.read_text())
     bundle = joblib.load(config.MODEL_PATH)
     feature_names = bundle["feature_names"]
-    X_train, y_train = split["X_train"][feature_names], split["y_train"]
-    X_test, y_test = split["X_test"][feature_names], split["y_test"]
-    labels_test = split["labels_test"].to_numpy()
+    X_train, y_train, _, _ = _xy(splits["train"], feature_names)
+    X_test, y_test, _, _ = _xy(splits["test"], feature_names)
+    labels_test = splits["test"][config.LABEL_COLUMN].to_numpy()
 
     predictions, scores = {}, {}
     rf = bundle["pipeline"]
@@ -579,6 +617,14 @@ def main() -> None:
     result["reproduces_saved_metrics"] = reproduced
     print(f"  reproduces saved confusion matrices: {reproduced}")
 
+    # The deployed decision: calibrated probability, risk-controlled alert threshold.
+    layer = bundle["reliability"]
+    calibrated = reliability.apply_calibration(layer["calibrator"], scores["Random Forest"])
+    decision = reliability.decide(calibrated, layer["t_benign"], layer["t_alert"])
+    predictions["RF deployed alert"] = (decision == reliability.MALICIOUS).astype(int)
+    result["deployed_review_by_label"] = {
+        str(k): int(v) for k, v in pd.Series(labels_test[decision == reliability.REVIEW]).value_counts().items()}
+
     support = {k: int(v) for k, v in pd.Series(labels_test).value_counts().items()}
     per_label = {}
     for name, pred in predictions.items():
@@ -591,6 +637,11 @@ def main() -> None:
     result["per_label_detection"] = per_label
     result["rf_errors_by_label"] = {
         label: int(((predictions["Random Forest"] != (0 if label == "BENIGN" else 1))
+                    & (labels_test == label)).sum())
+        for label in support
+    }
+    result["rf_deployed_errors_by_label"] = {
+        label: int(((predictions["RF deployed alert"] != (0 if label == "BENIGN" else 1))
                     & (labels_test == label)).sum())
         for label in support
     }

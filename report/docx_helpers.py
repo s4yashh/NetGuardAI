@@ -26,7 +26,7 @@ from docx.oxml.ns import nsdecls, qn
 from docx.shared import Inches, Pt, RGBColor
 
 FONT = "Times New Roman"
-MONO = "Consolas"
+MONO = "Courier New"  # plain monospaced font for code listings
 TEXT_WIDTH_IN = 6.0  # 8.5" page - 1.5" left - 1" right
 M_NS = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
 
@@ -72,6 +72,11 @@ def m_paren(body: str, left: str = "(", right: str = ")") -> str:
 
 def m_sqrt(body: str) -> str:
     return f'<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>{body}</m:e></m:rad>'
+
+
+def m_acc_hat(text: str) -> str:
+    """Upright text with a hat accent, e.g. an estimated quantity."""
+    return f'<m:acc><m:accPr><m:chr m:val="̂"/></m:accPr><m:e>{m_text(text)}</m:e></m:acc>'
 
 
 def m_bar(body: str) -> str:
@@ -137,6 +142,7 @@ class Report:
         self.eq_no = 0
         self.first_paragraph = True
         self.entries = {"C": [], "F": [], "T": []}   # contents, figures, tables
+        self.refs: dict[str, str] = {}               # named cross-references, e.g. "Table 4.6"
         self._placeholders = {}
         self._bookmark_id = 0
         self._setup_styles()
@@ -318,8 +324,6 @@ class Report:
         p.paragraph_format.space_after = Pt(space_after)
         r = p.add_run(text)
         _font(r, size, bold, italic)
-        if highlight:
-            r.font.highlight_color = 7  # yellow, marks a placeholder to fill in
         return p
 
     def spacer(self, points: float = 12) -> None:
@@ -483,7 +487,6 @@ class Report:
 
         for i, h in enumerate(headers):
             fill(table.rows[0].cells[i], h, bold=True, col=i)
-            _set_cell_shading(table.rows[0].cells[i], "D9E2F3")
         # Repeat the header row when a table spans pages.
         tr_pr = table.rows[0]._tr.get_or_add_trPr()
         tbl_header = OxmlElement("w:tblHeader")
@@ -518,7 +521,7 @@ class Report:
         return f"Eqn. {number}"
 
     def code(self, text: str, size: float = 8.5) -> None:
-        """Monospaced code block with light shading and single line spacing."""
+        """Monospaced code block, single line spacing, no shading."""
         for i, line in enumerate(text.rstrip("\n").split("\n")):
             p = self.doc.add_paragraph()
             fmt = p.paragraph_format
@@ -527,8 +530,6 @@ class Report:
             fmt.space_before = Pt(4) if i == 0 else Pt(0)
             fmt.left_indent = Inches(0.1)
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p_pr = p._p.get_or_add_pPr()
-            p_pr.append(parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="F3F4F6"/>'))
             _font(p.add_run(line if line else " "), size, name=MONO)
         self.spacer(8)
 
