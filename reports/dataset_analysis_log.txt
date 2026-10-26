@@ -1,0 +1,17 @@
+Reading raw files...
+  Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv
+  Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv
+  Friday-WorkingHours-Morning.pcap_ISCX.csv
+  Monday-WorkingHours.pcap_ISCX.csv
+  Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv
+  Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv
+  Tuesday-WorkingHours.pcap_ISCX.csv
+  Wednesday-workingHours.pcap_ISCX.csv
+Removing duplicates...
+Per-attack characteristics, ports, correlation...
+Rebuilding the training sample and split...
+  refitting Decision Tree for per-attack results
+  refitting Logistic Regression for per-attack results
+  reproduces saved confusion matrices: {'Random Forest': True, 'Decision Tree': True, 'Logistic Regression': True}
+Drawing figures...
+Saved /home/titan/vit/suyash/cnproj/reports/dataset_analysis.json and figures in /home/titan/vit/suyash/cnproj/reports/figures

@@ -13,14 +13,15 @@ machine-learning model to label every flow as **Benign** or **Malicious**.
 ## Project structure
 
 ```
-cnproj/
+NetGuardAI/
 ├── ml/                     Machine-learning pipeline
 │   ├── config.py           Paths and constants (split sizes, random seed, label names)
 │   ├── preprocess.py       Cleaning used by BOTH training and the API
 │   ├── reliability.py      Calibration, risk-controlled thresholds, review band,
 │   │                       and the batch distribution-shift gate
 │   ├── train.py            Load → clean → split → train 3 models → evaluate → save best
-│   └── experiments.py      Protocol comparison (random vs temporal) and ablations
+│   ├── experiments.py      Protocol comparison (random vs temporal) and ablations
+│   └── analyze_dataset.py  Dataset analysis: quality, duplicates, distributions, per-attack results
 ├── backend/
 │   ├── app/main.py         FastAPI app and endpoints
 │   ├── app/model_store.py  Loads the saved model and runs predictions
@@ -31,8 +32,9 @@ cnproj/
 │   ├── raw/                CIC-IDS2017 CSV files go here (not committed, ~844 MB)
 │   └── samples/            Demo CSVs created by training from the held-out test set
 ├── models/                 netguard_model.joblib (created by training)
-├── reports/                metrics.json, experiments.json, model_report.md, training_log.txt
-└── docs/VIVA_GUIDE.md      Short explanation for the viva / presentation
+├── reports/                metrics.json, experiments.json, dataset_analysis.json, figures/
+├── report/                 Scripts that generate the project report (VIT BCSE308P template)
+└── docs/                   screenshots/, demo/, report/ (project report .docx + .pdf)
 ```
 
 Research and audit documents live in the repository root:
@@ -245,6 +247,37 @@ pytest
 The tests train a tiny model on **synthetic** data in a temporary folder. They check the API behaviour
 (valid upload, missing columns, wrong file type, empty file, no model, CSV download) and never touch the real model
 or the real evaluation report.
+
+## 9. Dataset analysis
+
+```bash
+python -m ml.analyze_dataset
+```
+
+Reads the raw CSV files and writes `reports/dataset_analysis.json` and the figures in `reports/figures/`
+(about 4 minutes). It also rebuilds the exact training sample and test split and checks that the saved model
+reproduces the stored confusion matrices, then breaks detection down per attack type. Main findings:
+
+- 331,200 of 2,830,743 rows (11.7%) are exact duplicates: 45% of SSH-Patator and 43% of PortScan rows, 9% of benign.
+- `Flow Bytes/s` and `Flow Packets/s` contain ∞ and NaN because some flows have zero duration;
+  `-1` in `Init_Win_bytes_*` is a sentinel for flows without a TCP window (e.g. all DNS and NTP flows).
+- 8 features are constant (all bulk features, `Bwd PSH Flags`, `Bwd URG Flags`); 44 pairs have |r| ≥ 0.95 and
+  `Fwd PSH Flags` equals `SYN Flag Count` in every row.
+- Random Forest detects ≥ 99.1% of every attack label with at least 100 test flows, but only 68.9% of Bot
+  and 1 of 5 Infiltration / 0 of 3 Heartbleed flows. Those labels have only 4 and 1 training examples.
+
+## 10. Project report
+
+The report follows the VIT BCSE308P template (Times New Roman 12, 1.5 spacing, roman/arabic page numbers,
+71 pages from Chapter 1 to the References). It is generated from the real results:
+
+```bash
+python -m report.build_report          # writes docs/report/NetGuard_AI_Project_Report.docx
+```
+
+Open the .docx in Word and press Ctrl+A, F9 to fill the page numbers in the Contents and lists, or run
+`report/update_word.ps1` on Windows, which also exports the PDF. Fill in the highlighted placeholders
+(student names, register numbers, guide, dates) before submitting.
 
 ## Results
 

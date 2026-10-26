@@ -10,3 +10,6 @@ python-multipart==0.0.32
 # Tests
 pytest==9.1.1
 httpx2==2.13.1
+# Dataset analysis figures and project report
+matplotlib==3.11.2
+python-docx==1.2.0
