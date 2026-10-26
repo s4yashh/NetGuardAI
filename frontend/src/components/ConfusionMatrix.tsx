@@ -47,6 +47,7 @@ export default function ConfusionMatrix({ metrics }: { metrics: Metrics }) {
             </div>,
             ...row.map((count, j) => {
               const share = rowTotal ? count / rowTotal : 0;
+              const tint = Math.round((0.06 + share * 0.54) * 100);
               return (
                 <div
                   key={`${i}-${j}`}
@@ -55,7 +56,7 @@ export default function ConfusionMatrix({ metrics }: { metrics: Metrics }) {
                   } ${i === 0 && j === 1 ? "rounded-tr-lg" : ""} ${i === 1 && j === 0 ? "rounded-bl-lg" : ""} ${
                     i === 1 && j === 1 ? "rounded-br-lg" : ""
                   }`}
-                  style={{ background: `rgba(57, 135, 229, ${0.06 + share * 0.6})` }}
+                  style={{ background: `color-mix(in srgb, var(--color-series-1) ${tint}%, transparent)` }}
                   title={`${CELL_NAMES[i][j]}: ${formatInt(count)}`}
                 >
                   <span className="tabular text-xl font-semibold text-ink">{formatInt(count)}</span>

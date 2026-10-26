@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { BarChart3, Info } from "lucide-react";
+import { BarChart3, Info, Radar } from "lucide-react";
 import Header from "./components/Header";
+import ConsoleSidebar from "./components/ConsoleSidebar";
 import UploadPanel from "./components/UploadPanel";
 import ShiftWarning from "./components/ShiftWarning";
 import SummaryCards from "./components/SummaryCards";
@@ -75,10 +76,25 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen">
-      <Header health={health} error={healthError} />
-
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+    <div className="console-shell">
+      <ConsoleSidebar health={health} />
+      <div className="console-workspace">
+        <Header health={health} error={healthError} />
+        <main className="console-main">
+          <section className="console-hero" id="analysis">
+            <div>
+              <div className="eyebrow"><Radar size={13} /> Flow intelligence</div>
+              <h2>Make traffic decisions with context, not just confidence.</h2>
+              <p>
+                Analyze CICFlowMeter-style traffic records, inspect per-flow decisions, and verify whether the uploaded batch resembles the model’s training environment.
+              </p>
+            </div>
+            <div className="hero-meta" aria-label="Model capabilities">
+              <div className="metric-chip"><span>Classifier</span>{health?.model_name ?? "Loading"}</div>
+              <div className="metric-chip"><span>Reliability</span>{health?.reliability_active ? "Calibrated" : "Standard"}</div>
+              <div className="metric-chip"><span>Shift gate</span>{health?.shift_gate_active ? "Active" : "Unavailable"}</div>
+            </div>
+          </section>
         {health && !health.model_loaded && (
           <Notice>
             No trained model was found. Run <code className="text-ink">python -m ml.train</code> from the project folder,
@@ -99,13 +115,16 @@ export default function App() {
           <>
             <ShiftWarning shift={result.shift} warning={result.warning} />
             <SummaryCards result={result} />
-            <ResultsTable result={result} downloading={downloading} onDownload={handleDownload} />
+            <div id="results"><ResultsTable result={result} downloading={downloading} onDownload={handleDownload} /></div>
           </>
         )}
 
-        <div className="flex items-center gap-2 pt-2">
-          <BarChart3 size={18} className="text-muted" />
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-2">Model evaluation</h2>
+        <div className="section-heading" id="evaluation">
+          <div className="heading-icon"><BarChart3 size={16} /></div>
+          <div>
+            <h2>Model evaluation</h2>
+            <p>Held-out test performance, training data profile, and model features.</p>
+          </div>
         </div>
 
         {metrics ? (
@@ -120,18 +139,18 @@ export default function App() {
         ) : (
           <Notice>{metricsError ?? "Loading evaluation report…"}</Notice>
         )}
-      </main>
-
-      <footer className="mx-auto max-w-7xl px-4 pb-8 text-xs text-muted sm:px-6">
-        NetGuard AI · trained on the CIC-IDS2017 dataset (Canadian Institute for Cybersecurity, UNB)
-      </footer>
+          <footer className="footer">
+            NetGuard AI · trained on CIC-IDS2017 (Canadian Institute for Cybersecurity, UNB)
+          </footer>
+        </main>
+      </div>
     </div>
   );
 }
 
 function Notice({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-2 rounded-xl border border-line bg-card px-5 py-4 text-sm text-ink-2">
+    <div className="console-notice">
       <Info size={16} className="mt-0.5 shrink-0 text-muted" />
       <p>{children}</p>
     </div>

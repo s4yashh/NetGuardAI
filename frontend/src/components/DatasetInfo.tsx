@@ -20,9 +20,9 @@ export default function DatasetInfo({ metrics }: { metrics: Metrics }) {
   const malicious = dataset.class_counts?.Malicious ?? Math.max(dataset.rows_used - benign, 0);
   const parts = [
     { label: "Train", value: split.train, color: "bg-accent" },
-    { label: "Validation", value: split.validation, color: "bg-ink-2" },
-    ...(calibration > 0 ? [{ label: "Calibration", value: calibration, color: "bg-warn" }] : []),
-    { label: "Test", value: split.test, color: "bg-muted" },
+    { label: "Validation", value: split.validation, color: "bg-series-3" },
+    ...(calibration > 0 ? [{ label: "Calibration", value: calibration, color: "bg-review" }] : []),
+    { label: "Test", value: split.test, color: "bg-series-4" },
   ];
 
   return (

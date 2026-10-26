@@ -11,12 +11,12 @@ interface CardProps {
 /** The bordered navy panel used for every dashboard section. */
 export default function Card({ title, subtitle, action, children, className = "" }: CardProps) {
   return (
-    <section className={`rounded-xl border border-line bg-card p-5 ${className}`}>
+    <section className={`console-card ${className}`}>
       {(title || action) && (
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="card-header">
           <div>
-            {title && <h2 className="text-base font-semibold text-ink">{title}</h2>}
-            {subtitle && <p className="mt-0.5 text-sm text-muted">{subtitle}</p>}
+            {title && <h2 className="card-title">{title}</h2>}
+            {subtitle && <p className="card-subtitle">{subtitle}</p>}
           </div>
           {action}
         </div>

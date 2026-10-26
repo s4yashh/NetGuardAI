@@ -40,7 +40,10 @@ export default function ModelComparison({ metrics }: { metrics: Metrics }) {
           </thead>
           <tbody className="tabular">
             {metrics.models.map((model) => (
-              <tr key={model.name} className="border-t border-line">
+              <tr
+                key={model.name}
+                className={`border-t border-line ${model.name === metrics.best_model ? "bg-accent/5" : ""}`}
+              >
                 <td className="px-3 py-2.5">
                   <span className="inline-flex items-center gap-2 text-ink">
                     <span className="h-2.5 w-2.5 rounded-sm" style={{ background: MODEL_COLORS[model.name] }} />

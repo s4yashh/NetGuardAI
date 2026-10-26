@@ -54,6 +54,32 @@ Research and audit documents live in the repository root:
 - Node.js 20+ (tested with 24)
 - About 6 GB of free RAM for training with the default sample size
 
+## Quick start (one command)
+
+If you just want to run the website, use the launcher:
+
+```bash
+./start.sh
+```
+
+It creates `.venv` and installs dependencies if they are missing, starts the backend on port 8000
+and the frontend on port 5173, waits until both respond, and opens <http://localhost:5173>.
+Logs and PID files are written to `.run/` (ignored by git).
+
+On macOS you can also double-click **`Start NetGuard.command`** in Finder, and
+**`Stop NetGuard.command`** to shut everything down.
+
+| Command | Meaning |
+|---|---|
+| `./start.sh` | Start both servers and open the dashboard |
+| `./start.sh status` | Show whether both servers are running |
+| `./start.sh stop` or `./stop.sh` | Stop both servers |
+| `./start.sh restart` | Restart both servers |
+| `NO_OPEN=1 ./start.sh` | Start without opening the browser |
+
+The dataset is not needed for this; the trained model is included. Use the manual steps below only
+if you want to run the two servers yourself or set the project up from scratch.
+
 ## 2. Installation
 
 ```bash
